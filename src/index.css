@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+  body {
+    font-size: 11px;
+  }
+  table {
+    page-break-inside: avoid;
+  }
+  th, td {
+    border: 1px solid #e5e7eb !important;
+    padding: 4px 8px !important;
+  }
+}
