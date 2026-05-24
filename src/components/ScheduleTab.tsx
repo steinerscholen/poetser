@@ -41,7 +41,7 @@ export default function ScheduleTab() {
   // ── Actions ────────────────────────────────────────────────────────────────
 
   const handleCalculate = () => {
-    setComparison(compareMethodTargets(data, activeWeekends.length))
+    setComparison(compareMethodTargets(data, activeWeekends))
   }
 
   const handleGenerate = () => {
@@ -58,7 +58,7 @@ export default function ScheduleTab() {
   const kidName    = new Map(data.parents.flatMap((p) => p.kids.map((k) => [k.id, k.name])))
 
   const stats = assignments.length > 0
-    ? computeStats(data, activeWeekends.length, method)
+    ? computeStats(data, activeWeekends, method)
     : []
 
   // ── Render ─────────────────────────────────────────────────────────────────

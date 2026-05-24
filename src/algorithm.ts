@@ -1,23 +1,32 @@
 /**
- * Cleaning schedule algorithm — two weight methods
+ * Cleaning schedule algorithm — two weight methods, with partial-year eligibility.
  *
- * METHOD 'inverse'  (default)
- *   weight = 1 / kids
- *   → 1-kind parent cleans the most, 4-kids parent the least
- *   → more kids in school = proportionally fewer total duties
+ * METHOD 'inverse'
+ *   weight = 1 / kids  → 1-kind cleans the most, 4-kids the least
  *
  * METHOD 'per-student'
- *   weight = kids
- *   → every family does the same number of SESSIONS (≈ 1.6/year)
- *   → a 3-kids family cleans 3 classrooms per session; 1-kid cleans 1
- *   → total class-visits: proportional to kids
+ *   weight = kids  → every family makes the same number of school visits
  *
- * Both methods use a single GLOBAL debt counter per parent (not per class).
- * Compaction: parents already scheduled this weekend get a 0.5 priority bonus
- * so multi-class duties cluster on the same day.
+ * ELIGIBILITY
+ *   A kid (and their parent) is only eligible to clean a class on weekend W if:
+ *     kid.activeFrom  === undefined  OR  W.fridayDate >= kid.activeFrom
+ *     kid.activeTo    === undefined  OR  W.fridayDate <  kid.activeTo
+ *
+ *   This supports:
+ *   • Peuters joining mid-year      → kid.activeFrom = first day back after break
+ *   • Peuter→Kleuter transitions    → peuterklas kid gets activeTo,
+ *                                     kleuterklas kid gets activeFrom (same date)
+ *
+ * TARGETS
+ *   Adjusted per parent: a parent eligible for only half the weekends gets a
+ *   proportionally lower target so they aren't over-assigned when they do join.
+ *
+ * COMPACTION
+ *   Parents already scheduled this weekend get a +0.5 priority bonus so
+ *   multi-class duties cluster on the same day.
  */
 
-import type { AppData, Assignment, DaySlot, WeightMethod } from './types'
+import type { AppData, Assignment, DaySlot, Kid, WeightMethod } from './types'
 import { getWeekendFridays, getWeekendDates, findHoliday } from './utils/dates'
 
 // ─── Resolve active weekends ──────────────────────────────────────────────────
@@ -64,7 +73,25 @@ export function resolveWeekends(data: AppData): ResolvedWeekend[] {
   })
 }
 
-// ─── Weight helpers ───────────────────────────────────────────────────────────
+// ─── Eligibility ──────────────────────────────────────────────────────────────
+
+/** Is a specific kid active (eligible to clean their class) on this weekend? */
+export function isKidActiveOn(kid: Kid, fridayDate: string): boolean {
+  if (kid.activeFrom && fridayDate < kid.activeFrom) return false
+  if (kid.activeTo   && fridayDate >= kid.activeTo)  return false
+  return true
+}
+
+/** Is a parent eligible to clean class `classId` on this weekend? */
+function isEligibleFor(
+  parent: AppData['parents'][0],
+  classId: string,
+  fridayDate: string,
+): boolean {
+  return parent.kids.some((k) => k.classId === classId && isKidActiveOn(k, fridayDate))
+}
+
+// ─── Weight + target helpers ──────────────────────────────────────────────────
 
 function parentWeight(kids: number, method: WeightMethod): number {
   if (kids === 0) return 0
@@ -72,44 +99,65 @@ function parentWeight(kids: number, method: WeightMethod): number {
 }
 
 /**
- * Compute global target assignments per parent for a given method.
- * target[p] = weight[p] × K   where K = totalSlots / sumWeights
+ * Compute adjusted global target per parent.
+ *
+ * A parent eligible for only E of the W active weekends gets a target scaled
+ * by E/W relative to a full-year parent — preventing them from "catching up"
+ * unfairly when they eventually become eligible.
+ *
+ * target[p] = baseWeight[p] × (eligibleWeekends[p] / totalWeekends) × K
+ * where K = totalSlots / Σ adjustedWeights
  */
 export function computeTargets(
   parents: AppData['parents'],
-  totalSlots: number,
+  activeWeekends: ResolvedWeekend[],
+  classes: AppData['classes'],
   method: WeightMethod,
 ): Map<string, number> {
-  const weights = new Map(parents.map((p) => [p.id, parentWeight(p.kids.length, method)]))
-  const sumWeights = [...weights.values()].reduce((s, w) => s + w, 0)
-  const K = sumWeights > 0 ? totalSlots / sumWeights : 0
-  return new Map(parents.map((p) => [p.id, (weights.get(p.id) ?? 0) * K]))
+  const totalW = activeWeekends.length
+  const totalSlots = totalW * classes.length
+
+  // Adjusted weight: base weight × fraction of weekends where parent has
+  // at least one active kid in some class.
+  const adjWeights = new Map<string, number>()
+  for (const p of parents) {
+    const baseW = parentWeight(p.kids.length, method)
+    const eligibleW = activeWeekends.filter((w) =>
+      p.kids.some((k) =>
+        isKidActiveOn(k, w.fridayDate) &&
+        classes.some((c) => c.id === k.classId)
+      )
+    ).length
+    adjWeights.set(p.id, totalW > 0 ? baseW * (eligibleW / totalW) : 0)
+  }
+
+  const sumAdj = [...adjWeights.values()].reduce((s, w) => s + w, 0)
+  const K = sumAdj > 0 ? totalSlots / sumAdj : 0
+
+  return new Map(parents.map((p) => [p.id, (adjWeights.get(p.id) ?? 0) * K]))
 }
 
 // ─── Comparison helper (for the "Bereken" UI) ─────────────────────────────────
 
 export interface MethodComparison {
   method: WeightMethod
-  /** Expected targets grouped by kid count. */
   byKidCount: {
     kids: number
     familyCount: number
-    target: number                  // expected total assignments (poetsklassen)
-    schoolVisitsIfCompacted: number // target / kids = schoolbezoeken bij perfecte compactie
+    target: number
+    schoolVisitsIfCompacted: number
   }[]
 }
 
 export function compareMethodTargets(
   data: AppData,
-  activeWeekendCount: number,
+  activeWeekends: ResolvedWeekend[],
 ): MethodComparison[] {
   const { parents, classes } = data
-  const totalSlots = activeWeekendCount * classes.length
 
   return (['inverse', 'per-student'] as WeightMethod[]).map((method) => {
-    const targets = computeTargets(parents, totalSlots, method)
+    const targets = computeTargets(parents, activeWeekends, classes, method)
 
-    // Group by kid count
     const groups = new Map<number, { count: number; totalTarget: number }>()
     for (const p of parents) {
       const k = p.kids.length
@@ -146,13 +194,11 @@ export function generateSchedule(
 
   if (!activeWeekends.length || !classes.length || !parents.length) return []
 
-  const totalSlots = activeWeekends.length * classes.length
-  const globalTarget = computeTargets(parents, totalSlots, method)
+  const globalTarget = computeTargets(parents, activeWeekends, classes, method)
   const globalActual = new Map(parents.map((p) => [p.id, 0]))
 
   const result: Assignment[] = []
 
-  // parentDayOnWeekend[friday][parentId] = day chosen this weekend
   const parentDayOnWeekend = new Map<string, Map<string, DaySlot>>()
   for (const w of activeWeekends) {
     parentDayOnWeekend.set(w.fridayDate, new Map())
@@ -162,7 +208,10 @@ export function generateSchedule(
     const pdMap = parentDayOnWeekend.get(weekend.fridayDate)!
 
     for (const cls of classes) {
-      const eligible = parents.filter((p) => p.kids.some((k) => k.classId === cls.id))
+      // Only parents with an ACTIVE kid in this class this weekend
+      const eligible = parents.filter((p) =>
+        isEligibleFor(p, cls.id, weekend.fridayDate)
+      )
       if (!eligible.length) continue
 
       const scored = eligible.map((p) => ({
@@ -188,7 +237,11 @@ export function generateSchedule(
       pdMap.set(chosen.id, day)
       globalActual.set(chosen.id, (globalActual.get(chosen.id) ?? 0) + 1)
 
-      const kid = chosen.kids.find((k) => k.classId === cls.id)!
+      // Find the active kid for this class on this weekend
+      const kid = chosen.kids.find(
+        (k) => k.classId === cls.id && isKidActiveOn(k, weekend.fridayDate)
+      )!
+
       result.push({
         weekendFriday: weekend.fridayDate,
         classId: cls.id,
@@ -217,13 +270,12 @@ export interface ParentStats {
 
 export function computeStats(
   data: AppData,
-  activeWeekendCount: number,
+  activeWeekends: ResolvedWeekend[],
   method: WeightMethod = 'inverse',
 ): ParentStats[] {
   const { parents, classes, assignments } = data
   const classMap = new Map(classes.map((c) => [c.id, c]))
-  const totalSlots = activeWeekendCount * classes.length
-  const targets = computeTargets(parents, totalSlots, method)
+  const targets = computeTargets(parents, activeWeekends, classes, method)
 
   return parents.map((p) => {
     const target = targets.get(p.id) ?? 0
@@ -233,7 +285,6 @@ export function computeStats(
     for (const a of myAssignments) {
       byWeekend.set(a.weekendFriday, (byWeekend.get(a.weekendFriday) ?? 0) + 1)
     }
-    const compactedWeekends = [...byWeekend.values()].filter((n) => n >= 2).length
 
     const classCount = new Map<string, number>()
     for (const a of myAssignments) {
@@ -251,7 +302,7 @@ export function computeStats(
         className: classMap.get(cid)?.name ?? '?',
         count,
       })),
-      compactedWeekends,
+      compactedWeekends: [...byWeekend.values()].filter((n) => n >= 2).length,
     }
   })
 }

@@ -10,13 +10,25 @@ export const DAY_LABELS: Record<DaySlot, string> = {
 
 export interface SchoolClass {
   id: string
-  name: string // e.g. "Klas 1A"
+  name: string
 }
 
 export interface Kid {
   id: string
   name: string
   classId: string
+  /**
+   * ISO date from which this kid (and their parent) becomes eligible to clean
+   * this class. Undefined = eligible from the start of the school year.
+   * → Use for peuters who join mid-year.
+   */
+  activeFrom?: string
+  /**
+   * ISO date from which this kid is NO LONGER eligible for this class (exclusive).
+   * Undefined = eligible until the end of the school year.
+   * → Use for peuters transitioning to a kleuterklas.
+   */
+  activeTo?: string
 }
 
 export interface Parent {
@@ -32,25 +44,32 @@ export interface Holiday {
   endDate: string   // YYYY-MM-DD
 }
 
-/** Per-weekend overrides. Key = ISO date of the Friday of that weekend. */
+/** Per-weekend overrides. */
 export interface WeekendOverride {
-  fridayDate: string   // YYYY-MM-DD
-  availableDays: DaySlot[]  // which days are available (empty = skip entirely)
-  forcedDay?: DaySlot  // if set, cleaning MUST happen on this day
+  fridayDate: string
+  availableDays: DaySlot[]
+  forcedDay?: DaySlot
   note?: string
 }
 
 export interface SchoolYear {
-  start: string  // YYYY-MM-DD  (typically Sept 1)
-  end: string    // YYYY-MM-DD  (typically June 30 next year)
+  start: string
+  end: string
+}
+
+/**
+ * A named transition moment — the first school day after a holiday break.
+ * These are used as activeFrom / activeTo values on kids so the UI can offer
+ * a human-readable dropdown instead of raw date pickers.
+ */
+export interface TransitionMoment {
+  id: string
+  name: string  // e.g. "Na herfstvakantie"
+  date: string  // YYYY-MM-DD: first school day after the break
 }
 
 // ─── Algorithm method ─────────────────────────────────────────────────────────
 
-/**
- * inverse   — weight = 1/kids  → 1-kind poetst het meest, 4-kinderen het minst
- * per-student — weight = kids  → ieder gezin evenveel sessies, meer kinderen = meer klassen per sessie
- */
 export type WeightMethod = 'inverse' | 'per-student'
 
 export const METHOD_LABELS: Record<WeightMethod, string> = {
@@ -61,7 +80,7 @@ export const METHOD_LABELS: Record<WeightMethod, string> = {
 // ─── Algorithm output ────────────────────────────────────────────────────────
 
 export interface Assignment {
-  weekendFriday: string  // ISO date of the Friday
+  weekendFriday: string
   classId: string
   parentId: string
   kidId: string
@@ -75,10 +94,9 @@ export interface AppData {
   classes: SchoolClass[]
   parents: Parent[]
   holidays: Holiday[]
+  transitionMoments: TransitionMoment[]
   weekendOverrides: WeekendOverride[]
-  /** Default days available every weekend unless overridden. */
   defaultAvailableDays: DaySlot[]
-  /** Last generated schedule. */
   assignments: Assignment[]
 }
 
@@ -94,6 +112,14 @@ export const DEFAULT_DATA: AppData = {
     { id: 'h2', name: 'Kerstvakantie',   startDate: '2025-12-22', endDate: '2026-01-04' },
     { id: 'h3', name: 'Krokusvakantie',  startDate: '2026-02-16', endDate: '2026-02-22' },
     { id: 'h4', name: 'Paasvakantie',    startDate: '2026-04-06', endDate: '2026-04-19' },
+  ],
+  // First school day after each break — the natural transition moments for peuters
+  transitionMoments: [
+    { id: 't1', name: 'Na Allerheiligen',   date: '2025-11-03' },
+    { id: 't2', name: 'Na kerstvakantie',   date: '2026-01-05' },
+    { id: 't3', name: 'Na krokusvakantie',  date: '2026-02-23' },
+    { id: 't4', name: 'Na paasvakantie',    date: '2026-04-20' },
+    { id: 't5', name: 'Na zomervakantie',   date: '2026-09-01' },
   ],
   weekendOverrides: [],
   defaultAvailableDays: ['saturday'],

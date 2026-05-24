@@ -23,10 +23,22 @@ export default function ParentsTab() {
     update((d) => { const p = d.parents.find((p) => p.id === id); if (p) p.name = name })
   }
 
-  const addKid = (parentId: string, kidName: string, classId: string) => {
+  const addKid = (
+    parentId: string,
+    kidName: string,
+    classId: string,
+    activeFrom?: string,
+    activeTo?: string,
+  ) => {
     update((d) => {
       const p = d.parents.find((p) => p.id === parentId)
-      if (p) p.kids.push({ id: uid(), name: kidName, classId })
+      if (p) p.kids.push({
+        id: uid(),
+        name: kidName,
+        classId,
+        ...(activeFrom ? { activeFrom } : {}),
+        ...(activeTo   ? { activeTo }   : {}),
+      })
     })
   }
 
@@ -34,6 +46,16 @@ export default function ParentsTab() {
     update((d) => {
       const p = d.parents.find((p) => p.id === parentId)
       if (p) p.kids = p.kids.filter((k) => k.id !== kidId)
+    })
+  }
+
+  const updateKid = (parentId: string, kidId: string, activeFrom: string, activeTo: string) => {
+    update((d) => {
+      const p = d.parents.find((p) => p.id === parentId)
+      const k = p?.kids.find((k) => k.id === kidId)
+      if (!k) return
+      k.activeFrom = activeFrom || undefined
+      k.activeTo   = activeTo   || undefined
     })
   }
 
@@ -84,10 +106,16 @@ export default function ParentsTab() {
               key={parent.id}
               parent={parent}
               classes={data.classes}
+              transitionMoments={data.transitionMoments}
               onRename={(name) => renameParent(parent.id, name)}
               onRemove={() => removeParent(parent.id)}
-              onAddKid={(kidName, classId) => addKid(parent.id, kidName, classId)}
+              onAddKid={(kidName, classId, activeFrom, activeTo) =>
+                addKid(parent.id, kidName, classId, activeFrom, activeTo)
+              }
               onRemoveKid={(kidId) => removeKid(parent.id, kidId)}
+              onUpdateKid={(kidId, activeFrom, activeTo) =>
+                updateKid(parent.id, kidId, activeFrom, activeTo)
+              }
             />
           ))}
         </ul>
@@ -101,24 +129,36 @@ export default function ParentsTab() {
 interface ParentCardProps {
   parent: Parent
   classes: { id: string; name: string }[]
+  transitionMoments: { id: string; name: string; date: string }[]
   onRename: (name: string) => void
   onRemove: () => void
-  onAddKid: (name: string, classId: string) => void
+  onAddKid: (name: string, classId: string, activeFrom?: string, activeTo?: string) => void
   onRemoveKid: (kidId: string) => void
+  onUpdateKid: (kidId: string, activeFrom: string, activeTo: string) => void
 }
 
-function ParentCard({ parent, classes, onRename, onRemove, onAddKid, onRemoveKid }: ParentCardProps) {
-  const [kidName, setKidName] = useState('')
-  const [classId, setClassId] = useState(classes[0]?.id ?? '')
+function ParentCard({
+  parent, classes, transitionMoments,
+  onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid,
+}: ParentCardProps) {
+  const [kidName,      setKidName]      = useState('')
+  const [classId,      setClassId]      = useState(classes[0]?.id ?? '')
+  const [kidActiveFrom, setKidActiveFrom] = useState('')
+  const [kidActiveTo,   setKidActiveTo]   = useState('')
+  const [editKidId,    setEditKidId]    = useState<string | null>(null)
 
   const handleAddKid = () => {
     const name = kidName.trim()
     if (!name || !classId) return
-    onAddKid(name, classId)
+    onAddKid(name, classId, kidActiveFrom || undefined, kidActiveTo || undefined)
     setKidName('')
+    setKidActiveFrom('')
+    setKidActiveTo('')
   }
 
   const weight = parent.kids.length > 0 ? (1 / parent.kids.length).toFixed(2) : '—'
+  const hasTransitions = transitionMoments.length > 0
+  const sortedMoments = transitionMoments.slice().sort((a, b) => a.date.localeCompare(b.date))
 
   return (
     <li className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
@@ -142,22 +182,78 @@ function ParentCard({ parent, classes, onRename, onRemove, onAddKid, onRemoveKid
 
       {/* Kids */}
       {parent.kids.length > 0 && (
-        <ul className="flex flex-wrap gap-2">
+        <ul className="space-y-1.5">
           {parent.kids.map((kid) => {
-            const cls = classes.find((c) => c.id === kid.classId)
+            const cls        = classes.find((c) => c.id === kid.classId)
+            const isEditing  = editKidId === kid.id
+            const fromMoment = transitionMoments.find((m) => m.date === kid.activeFrom)
+            const toMoment   = transitionMoments.find((m) => m.date === kid.activeTo)
             return (
-              <li
-                key={kid.id}
-                className="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-full px-3 py-1 text-xs"
-              >
-                <span className="font-medium">{kid.name}</span>
-                <span className="text-gray-400">· {cls?.name ?? '?'}</span>
-                <button
-                  onClick={() => onRemoveKid(kid.id)}
-                  className="ml-1 text-gray-300 hover:text-red-500 transition-colors"
-                >
-                  ×
-                </button>
+              <li key={kid.id} className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-xs">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-medium text-gray-900">{kid.name}</span>
+                  <span className="text-gray-400">· {cls?.name ?? '?'}</span>
+                  {fromMoment && (
+                    <span className="bg-green-50 text-green-700 border border-green-200 rounded-full px-1.5 py-0.5">
+                      ↳ {fromMoment.name}
+                    </span>
+                  )}
+                  {toMoment && (
+                    <span className="bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-1.5 py-0.5">
+                      → {toMoment.name}
+                    </span>
+                  )}
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {hasTransitions && (
+                      <button
+                        onClick={() => setEditKidId(isEditing ? null : kid.id)}
+                        title="Overgangsperiode instellen"
+                        className={`transition-colors text-sm ${
+                          isEditing ? 'text-brand-500' : 'text-gray-300 hover:text-brand-500'
+                        }`}
+                      >
+                        ✎
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onRemoveKid(kid.id)}
+                      className="text-gray-300 hover:text-red-500 transition-colors"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+
+                {isEditing && (
+                  <div className="mt-2 pt-2 border-t border-gray-200 flex gap-3 flex-wrap items-center text-gray-500">
+                    <label className="flex items-center gap-1">
+                      <span>Actief vanaf:</span>
+                      <select
+                        className="border border-gray-200 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400"
+                        value={kid.activeFrom ?? ''}
+                        onChange={(e) => onUpdateKid(kid.id, e.target.value, kid.activeTo ?? '')}
+                      >
+                        <option value="">— begin schooljaar</option>
+                        {sortedMoments.map((m) => (
+                          <option key={m.id} value={m.date}>{m.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-1">
+                      <span>Actief tot:</span>
+                      <select
+                        className="border border-gray-200 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400"
+                        value={kid.activeTo ?? ''}
+                        onChange={(e) => onUpdateKid(kid.id, kid.activeFrom ?? '', e.target.value)}
+                      >
+                        <option value="">— einde schooljaar</option>
+                        {sortedMoments.map((m) => (
+                          <option key={m.id} value={m.date}>{m.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
               </li>
             )
           })}
@@ -165,29 +261,62 @@ function ParentCard({ parent, classes, onRename, onRemove, onAddKid, onRemoveKid
       )}
 
       {/* Add kid form */}
-      <div className="flex gap-2">
-        <input
-          className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
-          placeholder="Naam kind"
-          value={kidName}
-          onChange={(e) => setKidName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleAddKid()}
-        />
-        <select
-          className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
-          value={classId}
-          onChange={(e) => setClassId(e.target.value)}
-        >
-          {classes.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-        <button
-          onClick={handleAddKid}
-          className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm px-3 py-1.5 rounded-lg transition-colors"
-        >
-          + Kind
-        </button>
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <input
+            className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
+            placeholder="Naam kind"
+            value={kidName}
+            onChange={(e) => setKidName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddKid()}
+          />
+          <select
+            className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
+            value={classId}
+            onChange={(e) => setClassId(e.target.value)}
+          >
+            {classes.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          <button
+            onClick={handleAddKid}
+            className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm px-3 py-1.5 rounded-lg transition-colors"
+          >
+            + Kind
+          </button>
+        </div>
+
+        {hasTransitions && (
+          <div className="flex gap-3 flex-wrap items-center text-xs text-gray-500">
+            <label className="flex items-center gap-1">
+              <span>Actief vanaf:</span>
+              <select
+                className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                value={kidActiveFrom}
+                onChange={(e) => setKidActiveFrom(e.target.value)}
+              >
+                <option value="">— begin schooljaar</option>
+                {sortedMoments.map((m) => (
+                  <option key={m.id} value={m.date}>{m.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              <span>Actief tot:</span>
+              <select
+                className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                value={kidActiveTo}
+                onChange={(e) => setKidActiveTo(e.target.value)}
+              >
+                <option value="">— einde schooljaar</option>
+                {sortedMoments.map((m) => (
+                  <option key={m.id} value={m.date}>{m.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
       </div>
     </li>
   )

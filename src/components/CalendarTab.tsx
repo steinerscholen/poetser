@@ -55,6 +55,29 @@ export default function CalendarTab() {
     })
   }
 
+  // ─── Transition moments ────────────────────────────────────────────────────
+
+  const [tmName, setTmName] = useState('')
+  const [tmDate, setTmDate] = useState('')
+
+  const addTransitionMoment = () => {
+    const name = tmName.trim()
+    if (!name || !tmDate) return
+    update((d) => { d.transitionMoments.push({ id: uid(), name, date: tmDate }) })
+    setTmName(''); setTmDate('')
+  }
+
+  const removeTransitionMoment = (id: string) => {
+    update((d) => { d.transitionMoments = d.transitionMoments.filter((t) => t.id !== id) })
+  }
+
+  const updateTransitionMoment = (id: string, field: 'name' | 'date', value: string) => {
+    update((d) => {
+      const t = d.transitionMoments.find((t) => t.id === id)
+      if (t) t[field] = value
+    })
+  }
+
   // ─── Weekend overrides ─────────────────────────────────────────────────────
 
   const resolved = resolveWeekends(data)
@@ -187,6 +210,70 @@ export default function CalendarTab() {
                   <span className="text-gray-400 text-xs">→</span>
                   <input type="date" className="border border-gray-200 rounded px-2 py-1 text-xs" value={h.endDate} onChange={(e) => updateHoliday(h.id, 'endDate', e.target.value)} />
                   <button onClick={() => removeHoliday(h.id)} className="text-gray-300 hover:text-red-500 transition-colors text-lg leading-none">×</button>
+                </li>
+              ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Transition moments */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">Overgangsmomenten</h2>
+          <p className="text-sm text-gray-500">
+            De eerste schooldag na elke vakantie. Gebruikt als startmoment voor nieuwe peuters
+            en als overgangsmoment voor peuters die naar de kleuterklas gaan.
+          </p>
+        </div>
+
+        <div className="flex gap-2 flex-wrap">
+          <input
+            className="flex-1 min-w-40 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+            placeholder="Naam, bv. Na herfstvakantie"
+            value={tmName}
+            onChange={(e) => setTmName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addTransitionMoment()}
+          />
+          <input
+            type="date"
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+            value={tmDate}
+            onChange={(e) => setTmDate(e.target.value)}
+          />
+          <button
+            onClick={addTransitionMoment}
+            className="bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          >
+            + Moment
+          </button>
+        </div>
+
+        {data.transitionMoments.length === 0 ? (
+          <p className="text-sm text-gray-400 italic">Geen overgangsmomenten ingesteld.</p>
+        ) : (
+          <ul className="space-y-2">
+            {data.transitionMoments
+              .slice()
+              .sort((a, b) => a.date.localeCompare(b.date))
+              .map((tm) => (
+                <li key={tm.id} className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                  <input
+                    className="flex-1 text-sm bg-transparent focus:outline-none"
+                    value={tm.name}
+                    onChange={(e) => updateTransitionMoment(tm.id, 'name', e.target.value)}
+                  />
+                  <input
+                    type="date"
+                    className="border border-gray-200 rounded px-2 py-1 text-xs"
+                    value={tm.date}
+                    onChange={(e) => updateTransitionMoment(tm.id, 'date', e.target.value)}
+                  />
+                  <button
+                    onClick={() => removeTransitionMoment(tm.id)}
+                    className="text-gray-300 hover:text-red-500 transition-colors text-lg leading-none"
+                  >
+                    ×
+                  </button>
                 </li>
               ))}
           </ul>
