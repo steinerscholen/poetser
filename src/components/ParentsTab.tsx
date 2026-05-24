@@ -1,12 +1,18 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useStore } from '../store'
 import type { Parent } from '../types'
+import { classSortKey } from '../utils/sortClasses'
 
 function uid() { return crypto.randomUUID() }
 
+type SortBy = 'parent' | 'kid'
+
 export default function ParentsTab() {
   const { data, update } = useStore()
-  const [parentName, setParentName] = useState('')
+  const [parentName,    setParentName]    = useState('')
+  const [searchQuery,   setSearchQuery]   = useState('')
+  const [filterClassId, setFilterClassId] = useState('')
+  const [sortBy,        setSortBy]        = useState<SortBy>('parent')
 
   const addParent = () => {
     const name = parentName.trim()
@@ -59,6 +65,54 @@ export default function ParentsTab() {
     })
   }
 
+  // ── Sorted classes for filter bar ─────────────────────────────────────────
+
+  const sortedClasses = useMemo(
+    () => data.classes.slice().sort((a, b) => classSortKey(a.name).localeCompare(classSortKey(b.name))),
+    [data.classes],
+  )
+
+  // ── Filtered + sorted parent list ─────────────────────────────────────────
+
+  const filteredParents = useMemo(() => {
+    let list = [...data.parents]
+
+    // Text search — matches parent name or any kid name
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      list = list.filter((p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.kids.some((k) => k.name.toLowerCase().includes(q))
+      )
+    }
+
+    // Class filter
+    if (filterClassId) {
+      list = list.filter((p) => p.kids.some((k) => k.classId === filterClassId))
+    }
+
+    // Sort
+    list.sort((a, b) => {
+      if (sortBy === 'parent') {
+        // Last word of name as proxy for last name
+        const wordsA = a.name.split(' ')
+        const wordsB = b.name.split(' ')
+        const la = wordsA[wordsA.length - 1].toLowerCase()
+        const lb = wordsB[wordsB.length - 1].toLowerCase()
+        return la.localeCompare(lb, 'nl')
+      } else {
+        // Alphabetically first kid first-name across all kids
+        const ka = a.kids.map((k) => k.name.split(' ')[0].toLowerCase()).sort((x, y) => x.localeCompare(y))[0] ?? 'zzz'
+        const kb = b.kids.map((k) => k.name.split(' ')[0].toLowerCase()).sort((x, y) => x.localeCompare(y))[0] ?? 'zzz'
+        return ka.localeCompare(kb, 'nl')
+      }
+    })
+
+    return list
+  }, [data.parents, searchQuery, filterClassId, sortBy])
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   if (data.classes.length === 0) {
     return (
       <div className="max-w-lg mx-auto">
@@ -69,8 +123,10 @@ export default function ParentsTab() {
     )
   }
 
+  const isFiltered = !!searchQuery.trim() || !!filterClassId
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-5">
       <div>
         <h2 className="text-lg font-semibold text-gray-900 mb-1">Ouders &amp; kinderen</h2>
         <p className="text-sm text-gray-500">
@@ -96,12 +152,91 @@ export default function ParentsTab() {
         </button>
       </div>
 
+      {/* Search + sort */}
+      {data.parents.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex gap-2 flex-wrap items-center">
+            {/* Search */}
+            <div className="relative flex-1 min-w-48">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">🔍</span>
+              <input
+                className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="Zoek ouder of kind…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-lg leading-none"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+
+            {/* Sort toggle */}
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+              {(['parent', 'kid'] as SortBy[]).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSortBy(s)}
+                  className={`px-3 py-2 transition-colors ${
+                    sortBy === s
+                      ? 'bg-brand-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {s === 'parent' ? 'Achternaam ouder' : 'Voornaam kind'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Class filter chips */}
+          <div className="flex gap-1.5 flex-wrap">
+            <button
+              onClick={() => setFilterClassId('')}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                !filterClassId
+                  ? 'bg-brand-600 text-white border-brand-600'
+                  : 'bg-white text-gray-600 border-gray-300 hover:border-brand-400'
+              }`}
+            >
+              Alle klassen
+            </button>
+            {sortedClasses.map((cls) => (
+              <button
+                key={cls.id}
+                onClick={() => setFilterClassId(filterClassId === cls.id ? '' : cls.id)}
+                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                  filterClassId === cls.id
+                    ? 'bg-brand-600 text-white border-brand-600'
+                    : 'bg-white text-gray-600 border-gray-300 hover:border-brand-400'
+                }`}
+              >
+                {cls.name}
+              </button>
+            ))}
+          </div>
+
+          {/* Result count when filtering */}
+          {isFiltered && (
+            <p className="text-xs text-gray-400">
+              {filteredParents.length} van {data.parents.length} ouders
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Parent cards */}
       {data.parents.length === 0 ? (
         <p className="text-sm text-gray-400 italic">Nog geen ouders.</p>
+      ) : filteredParents.length === 0 ? (
+        <p className="text-sm text-gray-400 italic">Geen ouders gevonden.</p>
       ) : (
         <ul className="space-y-4">
-          {data.parents.map((parent) => (
+          {filteredParents.map((parent) => (
             <ParentCard
               key={parent.id}
               parent={parent}
@@ -141,11 +276,11 @@ function ParentCard({
   parent, classes, transitionMoments,
   onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid,
 }: ParentCardProps) {
-  const [kidName,      setKidName]      = useState('')
-  const [classId,      setClassId]      = useState(classes[0]?.id ?? '')
+  const [kidName,       setKidName]       = useState('')
+  const [classId,       setClassId]       = useState(classes[0]?.id ?? '')
   const [kidActiveFrom, setKidActiveFrom] = useState('')
   const [kidActiveTo,   setKidActiveTo]   = useState('')
-  const [editKidId,    setEditKidId]    = useState<string | null>(null)
+  const [editKidId,     setEditKidId]     = useState<string | null>(null)
 
   const handleAddKid = () => {
     const name = kidName.trim()
@@ -158,7 +293,7 @@ function ParentCard({
 
   const weight = parent.kids.length > 0 ? (1 / parent.kids.length).toFixed(2) : '—'
   const hasTransitions = transitionMoments.length > 0
-  const sortedMoments = transitionMoments.slice().sort((a, b) => a.date.localeCompare(b.date))
+  const sortedMoments  = transitionMoments.slice().sort((a, b) => a.date.localeCompare(b.date))
 
   return (
     <li className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
