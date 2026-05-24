@@ -37,6 +37,16 @@ Open `http://localhost:5173` en begin met importeren via het **📥 Importeren**
 
 Een testbestand met 231 fictieve leerlingen (11 klassen, realistische gezinsdemografie) staat in `public/leerlingenlijst-dummy.xlsx`.
 
+## Tips
+
+### Unieke oudernamen
+
+Gebruik bij voorkeur een unieke naam per gezin — idealiter een combinatie van de familienamen van beide ouders. Zo vermijd je verwarring wanneer kinderen in hetzelfde gezin een verschillende familienaam dragen.
+
+Een bekend voorbeeld zijn Scandinavische patroniemen: broer *Jacobsons* en zus *Jacobsone* zijn kinderen van dezelfde ouders. Als je hen apart invoert, lijken het twee aparte gezinnen. Door de oudernaam te combineren — bv. **Jacobsons-Jacobsone** of **Familie Jacobsons** — worden ze als één gezin herkend en krijgen ze het juiste gewicht in de verdeling.
+
+De naam die je hier gebruikt hoeft niet overeen te komen met een officiële of juridische naam; het is puur een administratief label binnen Poetser.
+
 ## Organisatie
 
 Dit project maakt deel uit van de [steinerscholen](https://github.com/steinerscholen) GitHub-organisatie.

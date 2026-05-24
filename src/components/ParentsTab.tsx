@@ -94,17 +94,24 @@ export default function ParentsTab() {
     // Sort
     list.sort((a, b) => {
       if (sortBy === 'parent') {
-        // Last word of name as proxy for last name
         const wordsA = a.name.split(' ')
         const wordsB = b.name.split(' ')
         const la = wordsA[wordsA.length - 1].toLowerCase()
         const lb = wordsB[wordsB.length - 1].toLowerCase()
         return la.localeCompare(lb, 'nl')
       } else {
-        // Alphabetically first kid first-name across all kids
-        const ka = a.kids.map((k) => k.name.split(' ')[0].toLowerCase()).sort((x, y) => x.localeCompare(y))[0] ?? 'zzz'
-        const kb = b.kids.map((k) => k.name.split(' ')[0].toLowerCase()).sort((x, y) => x.localeCompare(y))[0] ?? 'zzz'
-        return ka.localeCompare(kb, 'nl')
+        // When a class is filtered, sort by that specific kid's first name.
+        // Otherwise sort by the alphabetically first kid name across all kids.
+        const getKey = (p: Parent) => {
+          const pool = filterClassId
+            ? p.kids.filter((k) => k.classId === filterClassId)
+            : p.kids
+          const names = pool
+            .map((k) => k.name.split(' ')[0].toLowerCase())
+            .sort((x, y) => x.localeCompare(y, 'nl'))
+          return names[0] ?? 'zzz'
+        }
+        return getKey(a).localeCompare(getKey(b), 'nl')
       }
     })
 
@@ -242,6 +249,7 @@ export default function ParentsTab() {
               parent={parent}
               classes={data.classes}
               transitionMoments={data.transitionMoments}
+              focusClassId={filterClassId || undefined}
               onRename={(name) => renameParent(parent.id, name)}
               onRemove={() => removeParent(parent.id)}
               onAddKid={(kidName, classId, activeFrom, activeTo) =>
@@ -265,6 +273,8 @@ interface ParentCardProps {
   parent: Parent
   classes: { id: string; name: string }[]
   transitionMoments: { id: string; name: string; date: string }[]
+  /** When set, renders the kid from this class as the card header. */
+  focusClassId?: string
   onRename: (name: string) => void
   onRemove: () => void
   onAddKid: (name: string, classId: string, activeFrom?: string, activeTo?: string) => void
@@ -273,7 +283,7 @@ interface ParentCardProps {
 }
 
 function ParentCard({
-  parent, classes, transitionMoments,
+  parent, classes, transitionMoments, focusClassId,
   onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid,
 }: ParentCardProps) {
   const [kidName,       setKidName]       = useState('')
@@ -291,10 +301,270 @@ function ParentCard({
     setKidActiveTo('')
   }
 
-  const weight = parent.kids.length > 0 ? (1 / parent.kids.length).toFixed(2) : '—'
+  const weight        = parent.kids.length > 0 ? (1 / parent.kids.length).toFixed(2) : '—'
   const hasTransitions = transitionMoments.length > 0
   const sortedMoments  = transitionMoments.slice().sort((a, b) => a.date.localeCompare(b.date))
 
+  // Split kids into focused (in filter class) vs siblings
+  const focusedKids = focusClassId ? parent.kids.filter((k) => k.classId === focusClassId) : []
+  const siblingKids = focusClassId ? parent.kids.filter((k) => k.classId !== focusClassId) : parent.kids
+
+  // ── Kid row (reused in both sections) ──────────────────────────────────────
+  const renderKidRow = (kid: Parent['kids'][0], variant: 'focused' | 'sibling') => {
+    const cls        = classes.find((c) => c.id === kid.classId)
+    const isEditing  = editKidId === kid.id
+    const fromMoment = transitionMoments.find((m) => m.date === kid.activeFrom)
+    const toMoment   = transitionMoments.find((m) => m.date === kid.activeTo)
+
+    return (
+      <li key={kid.id} className={`border rounded-lg px-3 py-1.5 text-xs ${
+        variant === 'focused'
+          ? 'bg-white border-gray-200'
+          : 'bg-gray-50 border-gray-200'
+      }`}>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {variant === 'sibling' && (
+            <span className="font-medium text-gray-900">{kid.name}</span>
+          )}
+          <span className={variant === 'sibling' ? 'text-gray-400' : 'text-gray-500'}>
+            {variant === 'sibling' ? '· ' : ''}{cls?.name ?? '?'}
+          </span>
+          {fromMoment && (
+            <span className="bg-green-50 text-green-700 border border-green-200 rounded-full px-1.5 py-0.5">
+              ↳ {fromMoment.name}
+            </span>
+          )}
+          {toMoment && (
+            <span className="bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-1.5 py-0.5">
+              → {toMoment.name}
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-1.5">
+            {hasTransitions && (
+              <button
+                onClick={() => setEditKidId(isEditing ? null : kid.id)}
+                title="Overgangsperiode instellen"
+                className={`transition-colors text-sm ${
+                  isEditing ? 'text-brand-500' : 'text-gray-300 hover:text-brand-500'
+                }`}
+              >
+                ✎
+              </button>
+            )}
+            <button
+              onClick={() => onRemoveKid(kid.id)}
+              className="text-gray-300 hover:text-red-500 transition-colors"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+
+        {isEditing && (
+          <div className="mt-2 pt-2 border-t border-gray-200 flex gap-3 flex-wrap items-center text-gray-500">
+            <label className="flex items-center gap-1">
+              <span>Actief vanaf:</span>
+              <select
+                className="border border-gray-200 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400"
+                value={kid.activeFrom ?? ''}
+                onChange={(e) => onUpdateKid(kid.id, e.target.value, kid.activeTo ?? '')}
+              >
+                <option value="">— begin schooljaar</option>
+                {sortedMoments.map((m) => (
+                  <option key={m.id} value={m.date}>{m.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              <span>Actief tot:</span>
+              <select
+                className="border border-gray-200 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400"
+                value={kid.activeTo ?? ''}
+                onChange={(e) => onUpdateKid(kid.id, kid.activeFrom ?? '', e.target.value)}
+              >
+                <option value="">— einde schooljaar</option>
+                {sortedMoments.map((m) => (
+                  <option key={m.id} value={m.date}>{m.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+      </li>
+    )
+  }
+
+  // ── Add kid form ───────────────────────────────────────────────────────────
+  const addKidForm = (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <input
+          className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
+          placeholder="Naam kind"
+          value={kidName}
+          onChange={(e) => setKidName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleAddKid()}
+        />
+        <select
+          className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
+          value={classId}
+          onChange={(e) => setClassId(e.target.value)}
+        >
+          {classes.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        <button
+          onClick={handleAddKid}
+          className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm px-3 py-1.5 rounded-lg transition-colors"
+        >
+          + Kind
+        </button>
+      </div>
+
+      {hasTransitions && (
+        <div className="flex gap-3 flex-wrap items-center text-xs text-gray-500">
+          <label className="flex items-center gap-1">
+            <span>Actief vanaf:</span>
+            <select
+              className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
+              value={kidActiveFrom}
+              onChange={(e) => setKidActiveFrom(e.target.value)}
+            >
+              <option value="">— begin schooljaar</option>
+              {sortedMoments.map((m) => (
+                <option key={m.id} value={m.date}>{m.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span>Actief tot:</span>
+            <select
+              className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
+              value={kidActiveTo}
+              onChange={(e) => setKidActiveTo(e.target.value)}
+            >
+              <option value="">— einde schooljaar</option>
+              {sortedMoments.map((m) => (
+                <option key={m.id} value={m.date}>{m.name}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+    </div>
+  )
+
+  // ── Focused layout (class filter active) ──────────────────────────────────
+  if (focusClassId && focusedKids.length > 0) {
+    return (
+      <li className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+        {/* Kid(s) from focused class as card header */}
+        {focusedKids.map((kid) => (
+          <div key={kid.id}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-base font-bold text-gray-900">{kid.name}</div>
+                <div className="text-xs text-gray-400 mt-0.5">{parent.name}</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs bg-brand-50 text-brand-700 border border-brand-200 rounded-full px-2 py-0.5">
+                  gewicht {weight}
+                </span>
+                {hasTransitions && (
+                  <button
+                    onClick={() => setEditKidId(editKidId === kid.id ? null : kid.id)}
+                    title="Overgangsperiode instellen"
+                    className={`transition-colors text-sm ${
+                      editKidId === kid.id ? 'text-brand-500' : 'text-gray-300 hover:text-brand-500'
+                    }`}
+                  >
+                    ✎
+                  </button>
+                )}
+                <button
+                  onClick={() => onRemoveKid(kid.id)}
+                  className="text-gray-300 hover:text-red-500 transition-colors"
+                  title="Kind verwijderen"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {/* Transition badges under kid name */}
+            {(() => {
+              const fromMoment = transitionMoments.find((m) => m.date === kid.activeFrom)
+              const toMoment   = transitionMoments.find((m) => m.date === kid.activeTo)
+              return (fromMoment || toMoment) ? (
+                <div className="flex gap-1.5 mt-1 flex-wrap">
+                  {fromMoment && (
+                    <span className="text-xs bg-green-50 text-green-700 border border-green-200 rounded-full px-1.5 py-0.5">
+                      ↳ {fromMoment.name}
+                    </span>
+                  )}
+                  {toMoment && (
+                    <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-1.5 py-0.5">
+                      → {toMoment.name}
+                    </span>
+                  )}
+                </div>
+              ) : null
+            })()}
+
+            {/* Transition edit panel */}
+            {editKidId === kid.id && (
+              <div className="mt-2 pt-2 border-t border-gray-200 flex gap-3 flex-wrap items-center text-xs text-gray-500">
+                <label className="flex items-center gap-1">
+                  <span>Actief vanaf:</span>
+                  <select
+                    className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                    value={kid.activeFrom ?? ''}
+                    onChange={(e) => onUpdateKid(kid.id, e.target.value, kid.activeTo ?? '')}
+                  >
+                    <option value="">— begin schooljaar</option>
+                    {sortedMoments.map((m) => (
+                      <option key={m.id} value={m.date}>{m.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-1">
+                  <span>Actief tot:</span>
+                  <select
+                    className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                    value={kid.activeTo ?? ''}
+                    onChange={(e) => onUpdateKid(kid.id, kid.activeFrom ?? '', e.target.value)}
+                  >
+                    <option value="">— einde schooljaar</option>
+                    {sortedMoments.map((m) => (
+                      <option key={m.id} value={m.date}>{m.name}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Siblings */}
+        {siblingKids.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-xs text-gray-400 font-medium uppercase tracking-wide">
+              {siblingKids.length === 1 ? 'Broer of zus' : 'Broers &amp; zussen'}
+            </div>
+            <ul className="space-y-1.5">
+              {siblingKids.map((kid) => renderKidRow(kid, 'sibling'))}
+            </ul>
+          </div>
+        )}
+
+        {/* Add kid form */}
+        {addKidForm}
+      </li>
+    )
+  }
+
+  // ── Default layout (no class filter) ──────────────────────────────────────
   return (
     <li className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
       {/* Parent header */}
@@ -315,144 +585,15 @@ function ParentCard({
         </button>
       </div>
 
-      {/* Kids */}
+      {/* All kids */}
       {parent.kids.length > 0 && (
         <ul className="space-y-1.5">
-          {parent.kids.map((kid) => {
-            const cls        = classes.find((c) => c.id === kid.classId)
-            const isEditing  = editKidId === kid.id
-            const fromMoment = transitionMoments.find((m) => m.date === kid.activeFrom)
-            const toMoment   = transitionMoments.find((m) => m.date === kid.activeTo)
-            return (
-              <li key={kid.id} className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-xs">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="font-medium text-gray-900">{kid.name}</span>
-                  <span className="text-gray-400">· {cls?.name ?? '?'}</span>
-                  {fromMoment && (
-                    <span className="bg-green-50 text-green-700 border border-green-200 rounded-full px-1.5 py-0.5">
-                      ↳ {fromMoment.name}
-                    </span>
-                  )}
-                  {toMoment && (
-                    <span className="bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-1.5 py-0.5">
-                      → {toMoment.name}
-                    </span>
-                  )}
-                  <div className="ml-auto flex items-center gap-1.5">
-                    {hasTransitions && (
-                      <button
-                        onClick={() => setEditKidId(isEditing ? null : kid.id)}
-                        title="Overgangsperiode instellen"
-                        className={`transition-colors text-sm ${
-                          isEditing ? 'text-brand-500' : 'text-gray-300 hover:text-brand-500'
-                        }`}
-                      >
-                        ✎
-                      </button>
-                    )}
-                    <button
-                      onClick={() => onRemoveKid(kid.id)}
-                      className="text-gray-300 hover:text-red-500 transition-colors"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-
-                {isEditing && (
-                  <div className="mt-2 pt-2 border-t border-gray-200 flex gap-3 flex-wrap items-center text-gray-500">
-                    <label className="flex items-center gap-1">
-                      <span>Actief vanaf:</span>
-                      <select
-                        className="border border-gray-200 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400"
-                        value={kid.activeFrom ?? ''}
-                        onChange={(e) => onUpdateKid(kid.id, e.target.value, kid.activeTo ?? '')}
-                      >
-                        <option value="">— begin schooljaar</option>
-                        {sortedMoments.map((m) => (
-                          <option key={m.id} value={m.date}>{m.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-1">
-                      <span>Actief tot:</span>
-                      <select
-                        className="border border-gray-200 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400"
-                        value={kid.activeTo ?? ''}
-                        onChange={(e) => onUpdateKid(kid.id, kid.activeFrom ?? '', e.target.value)}
-                      >
-                        <option value="">— einde schooljaar</option>
-                        {sortedMoments.map((m) => (
-                          <option key={m.id} value={m.date}>{m.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                )}
-              </li>
-            )
-          })}
+          {parent.kids.map((kid) => renderKidRow(kid, 'sibling'))}
         </ul>
       )}
 
       {/* Add kid form */}
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <input
-            className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
-            placeholder="Naam kind"
-            value={kidName}
-            onChange={(e) => setKidName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAddKid()}
-          />
-          <select
-            className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
-            value={classId}
-            onChange={(e) => setClassId(e.target.value)}
-          >
-            {classes.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-          <button
-            onClick={handleAddKid}
-            className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm px-3 py-1.5 rounded-lg transition-colors"
-          >
-            + Kind
-          </button>
-        </div>
-
-        {hasTransitions && (
-          <div className="flex gap-3 flex-wrap items-center text-xs text-gray-500">
-            <label className="flex items-center gap-1">
-              <span>Actief vanaf:</span>
-              <select
-                className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
-                value={kidActiveFrom}
-                onChange={(e) => setKidActiveFrom(e.target.value)}
-              >
-                <option value="">— begin schooljaar</option>
-                {sortedMoments.map((m) => (
-                  <option key={m.id} value={m.date}>{m.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1">
-              <span>Actief tot:</span>
-              <select
-                className="border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
-                value={kidActiveTo}
-                onChange={(e) => setKidActiveTo(e.target.value)}
-              >
-                <option value="">— einde schooljaar</option>
-                {sortedMoments.map((m) => (
-                  <option key={m.id} value={m.date}>{m.name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        )}
-      </div>
+      {addKidForm}
     </li>
   )
 }
