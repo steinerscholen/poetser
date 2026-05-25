@@ -122,6 +122,6 @@ export const DEFAULT_DATA: AppData = {
     { id: 't5', name: 'Na zomervakantie',   date: '2026-09-01' },
   ],
   weekendOverrides: [],
-  defaultAvailableDays: ['saturday'],
+  defaultAvailableDays: ['saturday', 'sunday'],
   assignments: [],
 }

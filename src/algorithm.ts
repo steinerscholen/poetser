@@ -38,6 +38,7 @@ export interface ResolvedWeekend {
   isHoliday: boolean
   holidayName?: string
   skipped: boolean
+  note?: string
 }
 
 export function resolveWeekends(data: AppData): ResolvedWeekend[] {
@@ -69,6 +70,7 @@ export function resolveWeekends(data: AppData): ResolvedWeekend[] {
       isHoliday: !!holidayForAnyDay,
       holidayName: holidayForAnyDay?.name,
       skipped: availableDays.length === 0,
+      note: override?.note,
     }
   })
 }

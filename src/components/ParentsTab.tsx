@@ -66,6 +66,28 @@ export default function ParentsTab() {
     })
   }
 
+  /**
+   * Create a "transition kid" entry in the target class for the same child.
+   * Called when a peuter moves to a kleuterklas: sets up the new class slot
+   * with activeFrom = the source kid's activeTo so the parent is scheduled
+   * in the new class from the transition date onwards.
+   */
+  const addTransitionKid = (parentId: string, kidId: string, targetClassId: string) => {
+    update((d) => {
+      const p = d.parents.find((p) => p.id === parentId)
+      if (!p) return
+      const source = p.kids.find((k) => k.id === kidId)
+      if (!source?.activeTo) return
+      // Avoid duplicate if already created
+      const exists = p.kids.some(
+        (k) => k.classId === targetClassId && k.activeFrom === source.activeTo,
+      )
+      if (!exists) {
+        p.kids.push({ id: uid(), name: source.name, classId: targetClassId, activeFrom: source.activeTo })
+      }
+    })
+  }
+
   // ── Sorted classes for filter bar ─────────────────────────────────────────
 
   const sortedClasses = useMemo(
@@ -271,6 +293,9 @@ export default function ParentsTab() {
               onUpdateKid={(kidId, activeFrom, activeTo) =>
                 updateKid(parent.id, kidId, activeFrom, activeTo)
               }
+              onAddTransitionKid={(kidId, targetClassId) =>
+                addTransitionKid(parent.id, kidId, targetClassId)
+              }
             />
           ))}
         </ul>
@@ -294,17 +319,26 @@ interface ParentCardProps {
   onAddKid: (name: string, classId: string, activeFrom?: string, activeTo?: string) => void
   onRemoveKid: (kidId: string) => void
   onUpdateKid: (kidId: string, activeFrom: string, activeTo: string) => void
+  /** Create a linked kid entry in targetClassId with activeFrom = source kid's activeTo. */
+  onAddTransitionKid: (kidId: string, targetClassId: string) => void
 }
 
 function ParentCard({
   parent, classes, transitionMoments, focusClassId, effectiveKids,
-  onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid,
+  onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid, onAddTransitionKid,
 }: ParentCardProps) {
-  const [kidName,       setKidName]       = useState('')
-  const [classId,       setClassId]       = useState(classes[0]?.id ?? '')
-  const [kidActiveFrom, setKidActiveFrom] = useState('')
-  const [kidActiveTo,   setKidActiveTo]   = useState('')
-  const [editKidId,     setEditKidId]     = useState<string | null>(null)
+  const [kidName,          setKidName]          = useState('')
+  const [classId,          setClassId]          = useState(classes[0]?.id ?? '')
+  const [kidActiveFrom,    setKidActiveFrom]    = useState('')
+  const [kidActiveTo,      setKidActiveTo]      = useState('')
+  const [editKidId,        setEditKidId]        = useState<string | null>(null)
+  const [transitionClassId, setTransitionClassId] = useState('')
+
+  /** Toggle the edit panel; reset the transition class picker when switching kids. */
+  const toggleEdit = (kidId: string) => {
+    setEditKidId((prev) => (prev === kidId ? null : kidId))
+    setTransitionClassId('')
+  }
 
   const handleAddKid = () => {
     const name = kidName.trim()
@@ -322,6 +356,56 @@ function ParentCard({
   // Split kids into focused (in filter class) vs siblings
   const focusedKids = focusClassId ? parent.kids.filter((k) => k.classId === focusClassId) : []
   const siblingKids = focusClassId ? parent.kids.filter((k) => k.classId !== focusClassId) : parent.kids
+
+  // ── Transition destination picker ─────────────────────────────────────────
+  /**
+   * Shows below the "Actief tot" select whenever a departure date is set.
+   * - If a linked kid already exists in another class with activeFrom === activeTo → green confirmation.
+   * - Otherwise → amber picker + "Aanmaken" button to create the new kid entry.
+   */
+  const renderTransitionUI = (kid: Parent['kids'][0]) => {
+    if (!kid.activeTo) return null
+
+    const linked = parent.kids.find(
+      (k) => k.id !== kid.id && k.activeFrom === kid.activeTo,
+    )
+    if (linked) {
+      const linkedClass = classes.find((c) => c.id === linked.classId)
+      return (
+        <div className="w-full flex items-center gap-1.5 text-xs text-green-700">
+          <span>✓ Verhuist naar <strong>{linkedClass?.name ?? '?'}</strong></span>
+        </div>
+      )
+    }
+
+    const otherClasses = classes.filter((c) => c.id !== kid.classId)
+    return (
+      <div className="w-full flex items-center gap-1.5 flex-wrap text-xs text-amber-700">
+        <span className="shrink-0">→ Nieuwe klas:</span>
+        <select
+          className="border border-amber-300 bg-amber-50 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-amber-400"
+          value={transitionClassId}
+          onChange={(e) => setTransitionClassId(e.target.value)}
+        >
+          <option value="">— verplicht te kiezen —</option>
+          {otherClasses.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        {transitionClassId && (
+          <button
+            onClick={() => {
+              onAddTransitionKid(kid.id, transitionClassId)
+              setTransitionClassId('')
+            }}
+            className="shrink-0 bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 rounded px-2 py-0.5 transition-colors"
+          >
+            Aanmaken
+          </button>
+        )}
+      </div>
+    )
+  }
 
   // ── Kid row (reused in both sections) ──────────────────────────────────────
   const renderKidRow = (kid: Parent['kids'][0], variant: 'focused' | 'sibling') => {
@@ -356,7 +440,7 @@ function ParentCard({
           <div className="ml-auto flex items-center gap-1.5">
             {hasTransitions && (
               <button
-                onClick={() => setEditKidId(isEditing ? null : kid.id)}
+                onClick={() => toggleEdit(kid.id)}
                 title="Overgangsperiode instellen"
                 className={`transition-colors text-sm ${
                   isEditing ? 'text-brand-500' : 'text-gray-300 hover:text-brand-500'
@@ -402,6 +486,7 @@ function ParentCard({
                 ))}
               </select>
             </label>
+            {renderTransitionUI(kid)}
           </div>
         )}
       </li>
@@ -487,7 +572,7 @@ function ParentCard({
                 </span>
                 {hasTransitions && (
                   <button
-                    onClick={() => setEditKidId(editKidId === kid.id ? null : kid.id)}
+                    onClick={() => toggleEdit(kid.id)}
                     title="Overgangsperiode instellen"
                     className={`transition-colors text-sm ${
                       editKidId === kid.id ? 'text-brand-500' : 'text-gray-300 hover:text-brand-500'
@@ -555,6 +640,7 @@ function ParentCard({
                     ))}
                   </select>
                 </label>
+                {renderTransitionUI(kid)}
               </div>
             )}
           </div>

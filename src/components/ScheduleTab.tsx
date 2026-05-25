@@ -54,6 +54,9 @@ export default function ScheduleTab() {
   const lookup = new Map<string, typeof assignments[0]>()
   for (const a of assignments) lookup.set(`${a.weekendFriday}::${a.classId}`, a)
 
+  // Map fridayDate → resolved weekend (for available-days count and note)
+  const weekendMeta = new Map(weekends.map((w) => [w.fridayDate, w]))
+
   const parentName = new Map(data.parents.map((p) => [p.id, p.name]))
   const kidName    = new Map(data.parents.flatMap((p) => p.kids.map((k) => [k.id, k.name])))
 
@@ -238,6 +241,7 @@ export default function ScheduleTab() {
                         <div className="font-medium text-gray-800">{fmtWeekend(w.fridayDate)}</div>
                         {w.isHoliday && !w.skipped && <div className="text-xs text-amber-600">{w.holidayName}</div>}
                         {w.skipped && <div className="text-xs text-gray-400 italic">{w.holidayName ?? 'overgeslagen'}</div>}
+                        {w.note && <div className="text-xs text-blue-600 italic mt-0.5">{w.note}</div>}
                       </td>
                       {classes.map((cls) => {
                         const a = lookup.get(`${w.fridayDate}::${cls.id}`)
@@ -250,9 +254,11 @@ export default function ScheduleTab() {
                           <td key={cls.id} className="px-4 py-3 text-center">
                             <div className="font-medium text-gray-900">{kidName.get(a.kidId) ?? '?'}</div>
                             <div className="text-xs text-gray-400">{parentName.get(a.parentId)}</div>
-                            <span className={`inline-block mt-1 text-xs rounded-full px-2 py-0.5 ${DAY_BADGE[a.day]}`}>
-                              {DAY_LABELS[a.day].slice(0, 3)}
-                            </span>
+                            {(weekendMeta.get(a.weekendFriday)?.availableDays.length ?? 2) === 1 && (
+                              <span className={`inline-block mt-1 text-xs rounded-full px-2 py-0.5 ${DAY_BADGE[a.day]}`}>
+                                {DAY_LABELS[a.day].slice(0, 3)}
+                              </span>
+                            )}
                           </td>
                         )
                       })}

@@ -110,8 +110,8 @@ export default function CalendarTab() {
     setOverride(friday, { availableDays: next, forcedDay: undefined })
   }
 
-  const setForcedDay = (friday: string, day: DaySlot | '') => {
-    setOverride(friday, { forcedDay: day === '' ? undefined : day })
+  const setNote = (friday: string, note: string) => {
+    setOverride(friday, { note: note || undefined })
   }
 
   return (
@@ -340,20 +340,14 @@ export default function CalendarTab() {
                     })}
                   </div>
 
-                  {/* Forced day */}
-                  <div className="flex items-center gap-1 text-xs text-gray-500">
-                    <span>Verplicht:</span>
-                    <select
-                      className="border border-gray-200 rounded px-1 py-0.5 text-xs"
-                      value={ov?.forcedDay ?? ''}
-                      onChange={(e) => setForcedDay(w.fridayDate, e.target.value as DaySlot | '')}
-                    >
-                      <option value="">—</option>
-                      {effectiveDays.map((day) => (
-                        <option key={day} value={day}>{DAY_LABELS[day]}</option>
-                      ))}
-                    </select>
-                  </div>
+                  {/* Note */}
+                  <input
+                    type="text"
+                    placeholder="Opmerking voor dit weekend…"
+                    className="flex-1 min-w-40 border border-gray-200 rounded px-2 py-1 text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                    value={ov?.note ?? ''}
+                    onChange={(e) => setNote(w.fridayDate, e.target.value)}
+                  />
 
                   {/* Reset button */}
                   {isCustom && (
