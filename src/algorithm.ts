@@ -99,6 +99,24 @@ function parentWeight(kids: number, method: WeightMethod): number {
 }
 
 /**
+ * Maximum number of simultaneously-active kids for a parent across the given
+ * weekends. This differs from `parent.kids.length` when a child transitions
+ * between classes mid-year (two kid entries, never both active at once).
+ */
+export function effectiveKidCount(
+  parent: AppData['parents'][0],
+  activeWeekends: ResolvedWeekend[],
+): number {
+  if (activeWeekends.length === 0) return parent.kids.length
+  let max = 0
+  for (const w of activeWeekends) {
+    const n = parent.kids.filter((k) => isKidActiveOn(k, w.fridayDate)).length
+    if (n > max) max = n
+  }
+  return max
+}
+
+/**
  * Compute adjusted global target per parent.
  *
  * A parent eligible for only E of the W active weekends gets a target scaled
@@ -121,7 +139,7 @@ export function computeTargets(
   // at least one active kid in some class.
   const adjWeights = new Map<string, number>()
   for (const p of parents) {
-    const baseW = parentWeight(p.kids.length, method)
+    const baseW = parentWeight(effectiveKidCount(p, activeWeekends), method)
     const eligibleW = activeWeekends.filter((w) =>
       p.kids.some((k) =>
         isKidActiveOn(k, w.fridayDate) &&
@@ -160,7 +178,7 @@ export function compareMethodTargets(
 
     const groups = new Map<number, { count: number; totalTarget: number }>()
     for (const p of parents) {
-      const k = p.kids.length
+      const k = effectiveKidCount(p, activeWeekends)
       if (k === 0) continue
       const existing = groups.get(k) ?? { count: 0, totalTarget: 0 }
       groups.set(k, {
@@ -214,13 +232,18 @@ export function generateSchedule(
       )
       if (!eligible.length) continue
 
-      const scored = eligible.map((p) => ({
-        parent: p,
-        score:
-          (globalTarget.get(p.id) ?? 0) -
-          (globalActual.get(p.id) ?? 0) +
-          (pdMap.has(p.id) ? 0.5 : 0),
-      }))
+      const scored = eligible.map((p) => {
+        const target = globalTarget.get(p.id) ?? 0
+        const actual = globalActual.get(p.id) ?? 0
+        // Normalise remaining deficit by target so all parents decay at the
+        // same relative rate, spreading assignments evenly across the year
+        // rather than letting high-target parents dominate the early weeks.
+        const base = target > 0 ? (target - actual) / target : 0
+        return {
+          parent: p,
+          score: base + (pdMap.has(p.id) ? 0.5 : 0),
+        }
+      })
 
       scored.sort((a, b) => b.score - a.score)
       const chosen = scored[0].parent

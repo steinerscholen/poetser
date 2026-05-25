@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useStore } from '../store'
 import type { Parent } from '../types'
 import { classSortKey } from '../utils/sortClasses'
+import { resolveWeekends, effectiveKidCount } from '../algorithm'
 
 function uid() { return crypto.randomUUID() }
 
@@ -70,6 +71,16 @@ export default function ParentsTab() {
   const sortedClasses = useMemo(
     () => data.classes.slice().sort((a, b) => classSortKey(a.name).localeCompare(classSortKey(b.name))),
     [data.classes],
+  )
+
+  const activeWeekends = useMemo(
+    () => resolveWeekends(data).filter((w) => !w.skipped),
+    [data.schoolYear, data.holidays, data.weekendOverrides, data.defaultAvailableDays],
+  )
+
+  const effectiveKidsMap = useMemo(
+    () => new Map(data.parents.map((p) => [p.id, effectiveKidCount(p, activeWeekends)])),
+    [data.parents, activeWeekends],
   )
 
   // ── Filtered + sorted parent list ─────────────────────────────────────────
@@ -250,6 +261,7 @@ export default function ParentsTab() {
               classes={data.classes}
               transitionMoments={data.transitionMoments}
               focusClassId={filterClassId || undefined}
+              effectiveKids={effectiveKidsMap.get(parent.id) ?? parent.kids.length}
               onRename={(name) => renameParent(parent.id, name)}
               onRemove={() => removeParent(parent.id)}
               onAddKid={(kidName, classId, activeFrom, activeTo) =>
@@ -275,6 +287,8 @@ interface ParentCardProps {
   transitionMoments: { id: string; name: string; date: string }[]
   /** When set, renders the kid from this class as the card header. */
   focusClassId?: string
+  /** Max simultaneously-active kids — used for weight display. */
+  effectiveKids: number
   onRename: (name: string) => void
   onRemove: () => void
   onAddKid: (name: string, classId: string, activeFrom?: string, activeTo?: string) => void
@@ -283,7 +297,7 @@ interface ParentCardProps {
 }
 
 function ParentCard({
-  parent, classes, transitionMoments, focusClassId,
+  parent, classes, transitionMoments, focusClassId, effectiveKids,
   onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid,
 }: ParentCardProps) {
   const [kidName,       setKidName]       = useState('')
@@ -301,7 +315,7 @@ function ParentCard({
     setKidActiveTo('')
   }
 
-  const weight        = parent.kids.length > 0 ? (1 / parent.kids.length).toFixed(2) : '—'
+  const weight        = effectiveKids > 0 ? (1 / effectiveKids).toFixed(2) : '—'
   const hasTransitions = transitionMoments.length > 0
   const sortedMoments  = transitionMoments.slice().sort((a, b) => a.date.localeCompare(b.date))
 
