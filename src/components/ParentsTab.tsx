@@ -564,7 +564,7 @@ function ParentCard({
         {siblingKids.length > 0 && (
           <div className="space-y-1.5">
             <div className="text-xs text-gray-400 font-medium uppercase tracking-wide">
-              {siblingKids.length === 1 ? 'Broer of zus' : 'Broers &amp; zussen'}
+              Brussen
             </div>
             <ul className="space-y-1.5">
               {siblingKids.map((kid) => renderKidRow(kid, 'sibling'))}
