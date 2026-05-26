@@ -10,6 +10,13 @@ import type { MethodComparison } from '../algorithm'
 import { DAY_LABELS, METHOD_LABELS } from '../types'
 import type { WeightMethod } from '../types'
 import { fmtWeekend } from '../utils/dates'
+import {
+  exportAllClassesXlsx,
+  exportPerClassXlsx,
+  printAllClasses,
+  printPerClass,
+  printParentsAlpha,
+} from '../utils/export'
 
 const CLASS_COLORS = [
   'bg-blue-50 text-blue-900',   'bg-green-50 text-green-900',
@@ -23,11 +30,17 @@ const DAY_BADGE: Record<string, string> = {
   sunday: 'bg-emerald-100 text-emerald-700',
 }
 
+const METHOD_ICON: Record<WeightMethod, string> = {
+  sqrt:          '⚖️',
+  'per-student': '🔄',
+}
+
 export default function ScheduleTab() {
   const { data, update } = useStore()
 
-  const [method, setMethod]         = useState<WeightMethod>('inverse')
+  const [method, setMethod]         = useState<WeightMethod>('sqrt')
   const [comparison, setComparison] = useState<MethodComparison[] | null>(null)
+  const [showExport, setShowExport] = useState(false)
 
   const weekends       = resolveWeekends(data)
   const activeWeekends = weekends.filter((w) => !w.skipped)
@@ -79,13 +92,60 @@ export default function ScheduleTab() {
               : `${activeWeekends.length} actieve weekends · nog geen rooster gegenereerd`}
           </p>
         </div>
-        <button
-          onClick={() => window.print()}
-          disabled={assignments.length === 0}
-          className="bg-white border border-gray-300 hover:border-gray-400 disabled:opacity-40 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors print:hidden"
-        >
-          🖨 Afdrukken
-        </button>
+
+        {/* Export dropdown */}
+        <div className="relative print:hidden">
+          <button
+            onClick={() => setShowExport((v) => !v)}
+            disabled={assignments.length === 0}
+            className="bg-white border border-gray-300 hover:border-gray-400 disabled:opacity-40 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+          >
+            📤 Exporteren <span className="text-gray-400 text-xs">▾</span>
+          </button>
+
+          {showExport && (
+            <>
+              {/* Click-outside backdrop */}
+              <div className="fixed inset-0 z-10" onClick={() => setShowExport(false)} />
+              <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-20 min-w-60 py-2">
+
+                <div className="px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">Excel</div>
+                <button
+                  onClick={() => { exportAllClassesXlsx(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                >
+                  📊 Alle klassen
+                </button>
+                <button
+                  onClick={() => { exportPerClassXlsx(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                >
+                  📊 Per klas (aparte tabbladen)
+                </button>
+
+                <div className="border-t border-gray-100 mt-1 pt-1 px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">PDF / Afdrukken</div>
+                <button
+                  onClick={() => { printAllClasses(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                >
+                  🖨 Alle klassen
+                </button>
+                <button
+                  onClick={() => { printPerClass(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                >
+                  🖨 Per klas
+                </button>
+                <button
+                  onClick={() => { printParentsAlpha(data); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                >
+                  🖨 Ouders alfabetisch
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {!canGenerate && (
@@ -123,7 +183,7 @@ export default function ScheduleTab() {
                       <th className="px-3 py-2 text-center text-gray-400">Gezinnen</th>
                       {comparison.map((c) => (
                         <th key={c.method} className="px-4 py-2 text-center" colSpan={2}>
-                          {c.method === 'inverse' ? '⚖️ Methode 1' : '🔄 Methode 2'}
+                          {METHOD_ICON[c.method]} {c.method === 'sqrt' ? 'Methode 1' : 'Methode 2'}
                         </th>
                       ))}
                     </tr>
@@ -165,14 +225,14 @@ export default function ScheduleTab() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-gray-500">
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <span className="font-semibold text-gray-700">⚖️ Methode 1 — inverse gewicht</span><br />
-                  Meer kinderen = minder beurten. Een 1-kindouder poetst ~3× vaker dan een 3-kinderenouder.
-                  Totale poetsinspanning is omgekeerd evenredig aan het aantal kinderen.
+                <div className="bg-brand-50 border border-brand-200 rounded-lg p-3">
+                  <span className="font-semibold text-brand-800">⚖️ Methode 1 — gebalanceerd</span><br />
+                  Gewicht = √kinderen. Elk extra kind geeft een gedeeltelijke korting op het aantal beurten.
+                  Grote gezinnen doen meer dan bij methode 2, maar komen minder vaak langs dan kleine gezinnen.
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
-                  <span className="font-semibold text-gray-700">🔄 Methode 2 — per leerling gelijk</span><br />
-                  Elk gezin komt even vaak naar school poetsen (~{comparison[0]?.byKidCount[0]?.schoolVisitsIfCompacted.toFixed(1)}×).
+                  <span className="font-semibold text-gray-700">🔄 Methode 2 — gelijk aantal sessies</span><br />
+                  Elk gezin komt even vaak naar school poetsen (~{comparison[1]?.byKidCount[0]?.schoolVisitsIfCompacted.toFixed(1)}×).
                   Een 3-kinderenouder poetst bij elk bezoek 3 klassen; een 1-kindouder poetst er 1.
                 </div>
               </div>
@@ -182,7 +242,7 @@ export default function ScheduleTab() {
           {/* Method selector + generate */}
           <div className="border-t border-gray-100 pt-4 flex items-center gap-4 flex-wrap">
             <span className="text-sm font-medium text-gray-700">Methode:</span>
-            {(['inverse', 'per-student'] as WeightMethod[]).map((m) => (
+            {(['sqrt', 'per-student'] as WeightMethod[]).map((m) => (
               <label key={m} className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
                 <input
                   type="radio"
@@ -192,7 +252,7 @@ export default function ScheduleTab() {
                   onChange={() => setMethod(m)}
                   className="accent-brand-600"
                 />
-                {m === 'inverse' ? '⚖️ Methode 1' : '🔄 Methode 2'}
+                {METHOD_ICON[m]} {m === 'sqrt' ? 'Methode 1' : 'Methode 2'}
               </label>
             ))}
             <button

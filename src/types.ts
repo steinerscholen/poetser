@@ -70,10 +70,10 @@ export interface TransitionMoment {
 
 // ─── Algorithm method ─────────────────────────────────────────────────────────
 
-export type WeightMethod = 'inverse' | 'per-student'
+export type WeightMethod = 'sqrt' | 'per-student'
 
 export const METHOD_LABELS: Record<WeightMethod, string> = {
-  'inverse':     'Methode 1 — meer kinderen, minder beurten',
+  'sqrt':        'Methode 1 — gebalanceerd (vierkantswortel)',
   'per-student': 'Methode 2 — gelijk aantal sessies per gezin',
 }
 

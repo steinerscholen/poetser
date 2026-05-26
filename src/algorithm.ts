@@ -97,7 +97,8 @@ function isEligibleFor(
 
 function parentWeight(kids: number, method: WeightMethod): number {
   if (kids === 0) return 0
-  return method === 'inverse' ? 1 / kids : kids
+  if (method === 'sqrt') return Math.sqrt(kids)
+  /* per-student */      return kids
 }
 
 /**
@@ -175,7 +176,7 @@ export function compareMethodTargets(
 ): MethodComparison[] {
   const { parents, classes } = data
 
-  return (['inverse', 'per-student'] as WeightMethod[]).map((method) => {
+  return (['sqrt', 'per-student'] as WeightMethod[]).map((method) => {
     const targets = computeTargets(parents, activeWeekends, classes, method)
 
     const groups = new Map<number, { count: number; totalTarget: number }>()
@@ -207,7 +208,7 @@ export function compareMethodTargets(
 
 export function generateSchedule(
   data: AppData,
-  method: WeightMethod = 'inverse',
+  method: WeightMethod = 'sqrt',
 ): Assignment[] {
   const { classes, parents } = data
   const activeWeekends = resolveWeekends(data).filter((w) => !w.skipped)
@@ -296,7 +297,7 @@ export interface ParentStats {
 export function computeStats(
   data: AppData,
   activeWeekends: ResolvedWeekend[],
-  method: WeightMethod = 'inverse',
+  method: WeightMethod = 'sqrt',
 ): ParentStats[] {
   const { parents, classes, assignments } = data
   const classMap = new Map(classes.map((c) => [c.id, c]))
