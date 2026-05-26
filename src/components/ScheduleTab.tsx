@@ -49,7 +49,7 @@ function GripIcon() {
   )
 }
 
-type SwapValidity = 'clean' | 'compact-warn' | 'ineligible'
+type SwapValidity = 'clean' | 'compact-warn' | 'impossible' | 'ineligible'
 
 export default function ScheduleTab() {
   const { data, update } = useStore()
@@ -118,14 +118,26 @@ export default function ScheduleTab() {
     if (!parentEligibleOn(src.parentId, classId, tgtFriday)) return 'ineligible'
     if (!parentEligibleOn(tgt.parentId, classId, srcFriday)) return 'ineligible'
 
-    // Compaction: would the swap give a parent 2 assignments on the same weekend?
-    const srcCollides = assignments.some(
-      (a) => a.parentId === src.parentId && a.weekendFriday === tgtFriday && a.classId !== classId,
+    // Does dragging this cell away break the SOURCE parent's existing compaction?
+    // (they have another assignment on srcFriday — moving one away splits their visit)
+    const srcBreaksCompact = assignments.some(
+      (a) => a.parentId === src.parentId && a.weekendFriday === srcFriday && a.classId !== classId,
     )
-    const tgtCollides = assignments.some(
-      (a) => a.parentId === tgt.parentId && a.weekendFriday === srcFriday && a.classId !== classId,
+
+    // Does displacing the TARGET cell break the TARGET parent's existing compaction?
+    // (they have another assignment on tgtFriday — moving them away splits their visit)
+    const tgtBreaksCompact = assignments.some(
+      (a) => a.parentId === tgt.parentId && a.weekendFriday === tgtFriday && a.classId !== classId,
     )
-    return srcCollides || tgtCollides ? 'compact-warn' : 'clean'
+
+    // Orange: allowed — drag initiated from within a compacted block (deliberate two-hop)
+    if (srcBreaksCompact) return 'compact-warn'
+
+    // Red: blocked — a regular cell cannot remotely disrupt the target's compaction;
+    // the user must first drag from within that compacted block instead
+    if (tgtBreaksCompact) return 'impossible'
+
+    return 'clean'
   }
 
   /**
@@ -388,12 +400,14 @@ export default function ScheduleTab() {
                           cellCls += isOver
                             ? 'ring-2 ring-inset ring-amber-500 bg-amber-100 '
                             : 'ring-2 ring-inset ring-amber-400 bg-amber-50 cursor-copy '
+                        } else if (validity === 'impossible') {
+                          cellCls += 'ring-2 ring-inset ring-red-400 bg-red-50 cursor-not-allowed '
                         } else if (validity === 'ineligible') {
                           cellCls += 'opacity-40 '
                         } else if (dragging && !sameColumn) {
                           cellCls += 'opacity-30 '   // dim other columns during drag
                         } else {
-                          cellCls += 'cursor-grab '  // default: grabbable
+                          cellCls += 'cursor-grab hover:ring-2 hover:ring-gray-200 hover:rounded-lg '
                         }
 
                         return (
@@ -410,7 +424,7 @@ export default function ScheduleTab() {
                             }}
                             onDragOver={(e) => {
                               if (!dragging || dragging.classId !== cls.id || isSource) return
-                              if (validity === 'ineligible') return
+                              if (validity === 'ineligible' || validity === 'impossible') return
                               e.preventDefault()
                               e.dataTransfer.dropEffect = 'move'
                               if (dragOverFriday !== w.fridayDate) setDragOverFriday(w.fridayDate)
@@ -424,7 +438,7 @@ export default function ScheduleTab() {
                             onDrop={(e) => {
                               e.preventDefault()
                               if (!dragging || dragging.classId !== cls.id || isSource) return
-                              if (validity === 'ineligible') return
+                              if (validity === 'ineligible' || validity === 'impossible') return
                               performSwap(cls.id, dragging.fridayDate, w.fridayDate)
                               setDragging(null)
                               setDragOverFriday(null)
@@ -450,10 +464,15 @@ export default function ScheduleTab() {
                                 </span>
                               )}
 
-                              {/* Compaction-warn tooltip during drag */}
+                              {/* Tooltips during drag */}
                               {validity === 'compact-warn' && isOver && (
                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 bg-amber-700 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-30 pointer-events-none print:hidden">
-                                  ⚠️ Breekt compactie
+                                  ⚠️ Breekt jouw compactie
+                                </div>
+                              )}
+                              {validity === 'impossible' && isOver && (
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 bg-red-700 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-30 pointer-events-none print:hidden">
+                                  🚫 Sleep vanuit die cel zelf
                                 </div>
                               )}
                             </div>
@@ -475,11 +494,15 @@ export default function ScheduleTab() {
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block w-3 h-3 rounded-sm ring-2 ring-amber-400 bg-amber-50" />
-              Compactie wordt doorbroken
+              Breekt jouw compactie (toegestaan)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-sm ring-2 ring-red-400 bg-red-50" />
+              Niet mogelijk — sleep vanuit die cel zelf
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block w-3 h-3 rounded-sm bg-gray-200 opacity-50" />
-              Niet mogelijk (kind niet actief)
+              Kind niet actief dit weekend
             </span>
           </div>
         </>
