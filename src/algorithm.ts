@@ -230,18 +230,30 @@ export function generateSchedule(
 
     for (const cls of classes) {
       // Only parents with an ACTIVE kid in this class this weekend
-      const eligible = parents.filter((p) =>
+      const allEligible = parents.filter((p) =>
         isEligibleFor(p, cls.id, weekend.fridayDate)
       )
-      if (!eligible.length) continue
+      if (!allEligible.length) continue
+
+      // Respect the per-family duty cap; fall back to uncapped if everyone has hit it
+      const cap = data.maxDutiesPerFamily
+      const eligible = cap !== null
+        ? (allEligible.filter((p) => (globalActual.get(p.id) ?? 0) < cap).length > 0
+            ? allEligible.filter((p) => (globalActual.get(p.id) ?? 0) < cap)
+            : allEligible)
+        : allEligible
 
       const scored = eligible.map((p) => {
         const target = globalTarget.get(p.id) ?? 0
         const actual = globalActual.get(p.id) ?? 0
-        // Normalise remaining deficit by target so all parents decay at the
-        // same relative rate, spreading assignments evenly across the year
-        // rather than letting high-target parents dominate the early weeks.
-        const base = target > 0 ? (target - actual) / target : 0
+        // Apply historical carry-over: positive = over-contributed last year (gets credit),
+        // negative = under-contributed (gets debit). Capped by carryOverLimit.
+        const rawCarryOver = p.carryOver ?? 0
+        const coLimit = data.carryOverLimit
+        const carryOver = coLimit !== null
+          ? Math.max(-coLimit, Math.min(coLimit, rawCarryOver))
+          : rawCarryOver
+        const base = target > 0 ? (target - (actual + carryOver)) / target : 0
         return {
           parent: p,
           score: base + (pdMap.has(p.id) ? 0.5 : 0),

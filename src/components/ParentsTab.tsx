@@ -30,6 +30,13 @@ export default function ParentsTab() {
     update((d) => { const p = d.parents.find((p) => p.id === id); if (p) p.name = name })
   }
 
+  const setCarryOver = (id: string, value: number) => {
+    update((d) => {
+      const p = d.parents.find((p) => p.id === id)
+      if (p) p.carryOver = value === 0 ? undefined : value
+    })
+  }
+
   const addKid = (
     parentId: string,
     kidName: string,
@@ -296,6 +303,7 @@ export default function ParentsTab() {
               onAddTransitionKid={(kidId, targetClassId) =>
                 addTransitionKid(parent.id, kidId, targetClassId)
               }
+              onSetCarryOver={(value) => setCarryOver(parent.id, value)}
             />
           ))}
         </ul>
@@ -321,18 +329,30 @@ interface ParentCardProps {
   onUpdateKid: (kidId: string, activeFrom: string, activeTo: string) => void
   /** Create a linked kid entry in targetClassId with activeFrom = source kid's activeTo. */
   onAddTransitionKid: (kidId: string, targetClassId: string) => void
+  onSetCarryOver: (value: number) => void
 }
 
 function ParentCard({
   parent, classes, transitionMoments, focusClassId, effectiveKids,
-  onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid, onAddTransitionKid,
+  onRename, onRemove, onAddKid, onRemoveKid, onUpdateKid, onAddTransitionKid, onSetCarryOver,
 }: ParentCardProps) {
-  const [kidName,          setKidName]          = useState('')
-  const [classId,          setClassId]          = useState(classes[0]?.id ?? '')
-  const [kidActiveFrom,    setKidActiveFrom]    = useState('')
-  const [kidActiveTo,      setKidActiveTo]      = useState('')
-  const [editKidId,        setEditKidId]        = useState<string | null>(null)
+  const [kidName,           setKidName]           = useState('')
+  const [classId,           setClassId]           = useState(classes[0]?.id ?? '')
+  const [kidActiveFrom,     setKidActiveFrom]     = useState('')
+  const [kidActiveTo,       setKidActiveTo]       = useState('')
+  const [editKidId,         setEditKidId]         = useState<string | null>(null)
   const [transitionClassId, setTransitionClassId] = useState('')
+  const [editingCo,         setEditingCo]         = useState(false)
+  const [coInput,           setCoInput]           = useState('')
+
+  const co = parent.carryOver ?? 0
+
+  const startEditCo = () => { setCoInput(String(co)); setEditingCo(true) }
+  const saveCo = () => {
+    const v = parseFloat(coInput)
+    onSetCarryOver(isNaN(v) ? 0 : v)
+    setEditingCo(false)
+  }
 
   /** Toggle the edit panel; reset the transition class picker when switching kids. */
   const toggleEdit = (kidId: string) => {
@@ -566,10 +586,34 @@ function ParentCard({
                 <div className="text-base font-bold text-gray-900">{kid.name}</div>
                 <div className="text-xs text-gray-400 mt-0.5">{parent.name}</div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                 <span className="text-xs bg-brand-50 text-brand-700 border border-brand-200 rounded-full px-2 py-0.5">
                   gewicht {weight}
                 </span>
+                {editingCo ? (
+                  <input
+                    autoFocus
+                    type="number"
+                    step="0.1"
+                    value={coInput}
+                    onChange={(e) => setCoInput(e.target.value)}
+                    onBlur={saveCo}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveCo(); if (e.key === 'Escape') setEditingCo(false) }}
+                    className="w-20 text-xs border border-gray-300 rounded-full px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                  />
+                ) : co !== 0 ? (
+                  <button
+                    onClick={startEditCo}
+                    title="Klik om overdracht te bewerken"
+                    className={`text-xs rounded-full px-2 py-0.5 border transition-colors ${
+                      co > 0
+                        ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+                        : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                    }`}
+                  >
+                    overdracht {co > 0 ? '+' : ''}{co.toFixed(1)}
+                  </button>
+                ) : null}
                 {hasTransitions && (
                   <button
                     onClick={() => toggleEdit(kid.id)}
@@ -668,18 +712,42 @@ function ParentCard({
   return (
     <li className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
       {/* Parent header */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <input
-          className="flex-1 font-semibold text-gray-900 bg-transparent focus:outline-none focus:ring-1 focus:ring-brand-400 rounded px-1"
+          className="flex-1 font-semibold text-gray-900 bg-transparent focus:outline-none focus:ring-1 focus:ring-brand-400 rounded px-1 min-w-0"
           value={parent.name}
           onChange={(e) => onRename(e.target.value)}
         />
-        <span className="text-xs bg-brand-50 text-brand-700 border border-brand-200 rounded-full px-2 py-0.5">
+        <span className="text-xs bg-brand-50 text-brand-700 border border-brand-200 rounded-full px-2 py-0.5 shrink-0">
           gewicht {weight}
         </span>
+        {editingCo ? (
+          <input
+            autoFocus
+            type="number"
+            step="0.1"
+            value={coInput}
+            onChange={(e) => setCoInput(e.target.value)}
+            onBlur={saveCo}
+            onKeyDown={(e) => { if (e.key === 'Enter') saveCo(); if (e.key === 'Escape') setEditingCo(false) }}
+            className="w-20 text-xs border border-gray-300 rounded-full px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-400 shrink-0"
+          />
+        ) : co !== 0 ? (
+          <button
+            onClick={startEditCo}
+            title="Klik om overdracht te bewerken"
+            className={`text-xs rounded-full px-2 py-0.5 border shrink-0 transition-colors ${
+              co > 0
+                ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+                : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+            }`}
+          >
+            overdracht {co > 0 ? '+' : ''}{co.toFixed(1)}
+          </button>
+        ) : null}
         <button
           onClick={onRemove}
-          className="text-gray-300 hover:text-red-500 transition-colors text-lg leading-none"
+          className="text-gray-300 hover:text-red-500 transition-colors text-lg leading-none shrink-0"
         >
           ×
         </button>

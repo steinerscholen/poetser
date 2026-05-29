@@ -13,6 +13,12 @@ import Papa from 'papaparse'
 import { useStore } from '../store'
 import { sortClasses } from '../utils/sortClasses'
 
+interface CarryOverRow {
+  name: string
+  value: number
+  parentId: string | null
+}
+
 function uid() { return crypto.randomUUID() }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -60,7 +66,7 @@ function parseCsv(text: string): ParsedFile {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ImportTab() {
-  const { update } = useStore()
+  const { data, update } = useStore()
 
   const [parsed, setParsed]     = useState<ParsedFile | null>(null)
   const [fileName, setFileName] = useState('')
@@ -70,7 +76,14 @@ export default function ImportTab() {
   const [error, setError]       = useState('')
   const [dragging, setDragging] = useState(false)
 
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef   = useRef<HTMLInputElement>(null)
+
+  // ── Carry-over import state ────────────────────────────────────────────────
+  const [coFileName, setCoFileName] = useState('')
+  const [coRows,     setCoRows]     = useState<CarryOverRow[] | null>(null)
+  const [coApplied,  setCoApplied]  = useState(false)
+  const [coDragging, setCoDragging] = useState(false)
+  const coInputRef = useRef<HTMLInputElement>(null)
 
   // ── File handling ──────────────────────────────────────────────────────────
 
@@ -178,6 +191,46 @@ export default function ImportTab() {
     })
 
     setResult({ classesAdded, parentsAdded, kidsAdded, kidsSkipped })
+  }
+
+  // ── Carry-over file handler ────────────────────────────────────────────────
+
+  const handleCarryOverFile = useCallback(async (file: File) => {
+    setCoApplied(false)
+    setCoFileName(file.name)
+    setCoRows(null)
+
+    const text = await file.text()
+    const result = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true })
+    const fields = result.meta.fields ?? []
+
+    // Accept any two-column CSV; first column = name, second = value
+    const nameCol  = fields.find((f) => /naam|name/i.test(f)) ?? fields[0] ?? ''
+    const valueCol = fields.find((f) => /overdracht|carry|deviation|delta/i.test(f)) ?? fields[1] ?? ''
+
+    const rows: CarryOverRow[] = result.data
+      .map((row) => {
+        const name  = String(row[nameCol] ?? '').trim()
+        const value = parseFloat(String(row[valueCol] ?? '0'))
+        if (!name) return null
+        const parent = data.parents.find((p) => p.name.toLowerCase() === name.toLowerCase())
+        return { name, value: isNaN(value) ? 0 : value, parentId: parent?.id ?? null }
+      })
+      .filter(Boolean) as CarryOverRow[]
+
+    setCoRows(rows)
+  }, [data.parents])
+
+  const applyCarryOver = () => {
+    if (!coRows) return
+    const matched = coRows.filter((r) => r.parentId !== null)
+    update((d) => {
+      for (const row of matched) {
+        const p = d.parents.find((p) => p.id === row.parentId)
+        if (p) p.carryOver = row.value === 0 ? undefined : row.value
+      }
+    })
+    setCoApplied(true)
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -350,6 +403,98 @@ export default function ImportTab() {
           </p>
         </div>
       )}
+
+      {/* ── Carry-over section ─────────────────────────────────────────────── */}
+      <div className="border-t border-gray-200 pt-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-1">Overdracht vorig schooljaar</h2>
+          <p className="text-sm text-gray-500">
+            Importeer het overdrachtsbestand dat vorig jaar via het Rooster-tabblad is geëxporteerd.
+            Gezinnen die iets meer dan hun deel gedaan hebben krijgen een kleine voorsprong; gezinnen die iets minder deden worden iets eerder ingepland.
+          </p>
+        </div>
+
+        {/* Drop zone */}
+        <div
+          onDragOver={(e) => { e.preventDefault(); setCoDragging(true) }}
+          onDragLeave={() => setCoDragging(false)}
+          onDrop={(e) => { e.preventDefault(); setCoDragging(false); const f = e.dataTransfer.files[0]; if (f) handleCarryOverFile(f) }}
+          onClick={() => coInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
+            coDragging
+              ? 'border-brand-500 bg-brand-50'
+              : 'border-gray-300 hover:border-brand-400 hover:bg-gray-50'
+          }`}
+        >
+          <input
+            ref={coInputRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCarryOverFile(f) }}
+          />
+          <div className="text-2xl mb-1">📋</div>
+          <p className="text-sm font-medium text-gray-700">
+            {coFileName ? coFileName : 'Sleep overdracht.csv hierheen of klik om te kiezen'}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">.csv — twee kolommen: naam, overdracht</p>
+        </div>
+
+        {/* Matching table */}
+        {coRows && (
+          <div className="space-y-3">
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
+              <table className="min-w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    <th className="px-4 py-2 text-left">Naam (bestand)</th>
+                    <th className="px-4 py-2 text-center">Overdracht</th>
+                    <th className="px-4 py-2 text-left">Gekoppeld aan</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {coRows.map((row, i) => (
+                    <tr key={i} className={`border-b border-gray-100 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
+                      <td className="px-4 py-2 text-gray-800">{row.name}</td>
+                      <td className={`px-4 py-2 text-center text-xs font-medium ${
+                        row.value > 0 ? 'text-green-600' : row.value < 0 ? 'text-amber-600' : 'text-gray-400'
+                      }`}>
+                        {row.value > 0 ? `+${row.value.toFixed(2)}` : row.value.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-2 text-xs">
+                        {row.parentId
+                          ? <span className="text-green-700">✓ {data.parents.find(p => p.id === row.parentId)?.name}</span>
+                          : <span className="text-gray-400 italic">niet gevonden</span>
+                        }
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <p className="text-xs text-gray-500">
+                {coRows.filter((r) => r.parentId !== null).length} van de {coRows.length} namen gekoppeld.
+                {coRows.filter((r) => r.parentId === null).length > 0 && (
+                  <span className="text-amber-600"> Niet-gevonden namen worden overgeslagen.</span>
+                )}
+              </p>
+              {coApplied ? (
+                <p className="text-sm text-green-700 font-medium">✓ Overdracht toegepast</p>
+              ) : (
+                <button
+                  onClick={applyCarryOver}
+                  disabled={!coRows.some((r) => r.parentId !== null)}
+                  className="bg-brand-600 hover:bg-brand-700 disabled:bg-gray-200 disabled:text-gray-400 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+                >
+                  Toepassen
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

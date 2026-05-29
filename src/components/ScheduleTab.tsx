@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useStore } from '../store'
 import {
   generateSchedule,
@@ -154,6 +154,53 @@ export default function ScheduleTab() {
     })
   }
 
+  const parentCarryOver = new Map(data.parents.map((p) => [p.id, p.carryOver ?? 0]))
+
+  const exportCarryOverCsv = () => {
+    if (!stats.length) return
+    const lines = ['naam,overdracht']
+    for (const s of stats) {
+      lines.push(`"${s.parentName.replace(/"/g, '""')}",${s.deviation.toFixed(2)}`)
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url; a.download = 'overdracht-volgend-jaar.csv'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // ── Cap overflow analysis (live, based on current assignments) ─────────────
+
+  const capOverflow = useMemo(() => {
+    if (data.maxDutiesPerFamily === null || assignments.length === 0) return null
+    const cap = data.maxDutiesPerFamily
+
+    // For each parent, mark their assignments beyond the cap (sorted chronologically)
+    const overflowKeys = new Set<string>()
+    for (const p of data.parents) {
+      const sorted = assignments
+        .filter((a) => a.parentId === p.id)
+        .sort((a, b) => a.weekendFriday.localeCompare(b.weekendFriday))
+      sorted.slice(cap).forEach((a) => overflowKeys.add(`${a.weekendFriday}::${a.classId}`))
+    }
+
+    // Group by month (YYYY-MM)
+    const byMonth = new Map<string, { total: number; overflow: number }>()
+    for (const a of assignments) {
+      const m = a.weekendFriday.slice(0, 7)
+      const cur = byMonth.get(m) ?? { total: 0, overflow: 0 }
+      cur.total++
+      if (overflowKeys.has(`${a.weekendFriday}::${a.classId}`)) cur.overflow++
+      byMonth.set(m, cur)
+    }
+
+    return {
+      months: [...byMonth.entries()].sort(),
+      totalOverflow: overflowKeys.size,
+      total: assignments.length,
+    }
+  }, [data.maxDutiesPerFamily, assignments, data.parents])
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -300,19 +347,138 @@ export default function ScheduleTab() {
             </div>
           )}
 
-          <div className="border-t border-gray-100 pt-4 flex items-center gap-4 flex-wrap">
-            <span className="text-sm font-medium text-gray-700">Methode:</span>
-            {(['sqrt', 'per-student'] as WeightMethod[]).map((m) => (
-              <label key={m} className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
-                <input type="radio" name="method" value={m} checked={method === m}
-                  onChange={() => setMethod(m)} className="accent-brand-600" />
-                {METHOD_ICON[m]} {m === 'sqrt' ? 'Methode 1' : 'Methode 2'}
+          {/* Method selector + generate */}
+          <div className="border-t border-gray-100 pt-4 space-y-3">
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="text-sm font-medium text-gray-700">Methode:</span>
+              {(['sqrt', 'per-student'] as WeightMethod[]).map((m) => (
+                <label key={m} className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="method"
+                    value={m}
+                    checked={method === m}
+                    onChange={() => setMethod(m)}
+                    className="accent-brand-600"
+                  />
+                  {METHOD_ICON[m]} {m === 'sqrt' ? 'Methode 1' : 'Methode 2'}
+                </label>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={data.maxDutiesPerFamily !== null}
+                  onChange={(e) => update((d) => { d.maxDutiesPerFamily = e.target.checked ? 4 : null })}
+                  className="accent-brand-600"
+                />
+                Maximum beurten per gezin
               </label>
-            ))}
-            <button onClick={handleGenerate}
-              className="ml-auto bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-6 py-2 rounded-lg transition-colors">
-              ↺ Genereren
-            </button>
+              {data.maxDutiesPerFamily !== null && (
+                <input
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={data.maxDutiesPerFamily}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (v >= 1) update((d) => { d.maxDutiesPerFamily = v })
+                  }}
+                  className="w-16 text-center text-sm border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              )}
+              {data.maxDutiesPerFamily === null && (
+                <span className="text-xs text-gray-400">geen limiet</span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={data.carryOverLimit !== null}
+                  onChange={(e) => update((d) => { d.carryOverLimit = e.target.checked ? 2 : null })}
+                  className="accent-brand-600"
+                />
+                Overdracht vorig jaar beperken tot
+              </label>
+              {data.carryOverLimit !== null && (
+                <>
+                  <input
+                    type="number"
+                    min={0.5}
+                    max={10}
+                    step={0.5}
+                    value={data.carryOverLimit}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value)
+                      if (v >= 0.5) update((d) => { d.carryOverLimit = v })
+                    }}
+                    className="w-16 text-center text-sm border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  />
+                  <span className="text-xs text-gray-400">beurt(en)</span>
+                </>
+              )}
+              {data.carryOverLimit === null && (
+                <span className="text-xs text-gray-400">geen limiet</span>
+              )}
+            </div>
+
+            {/* Cap coverage visualization */}
+            {capOverflow && (
+              <div className="space-y-1.5 pt-1">
+                {capOverflow.totalOverflow === 0 ? (
+                  <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                    ✓ Alle {capOverflow.total} toewijzingen passen binnen het maximum van {data.maxDutiesPerFamily}.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-xs text-amber-700">
+                      <strong>{capOverflow.totalOverflow}</strong> van de {capOverflow.total} toewijzingen ({Math.round(capOverflow.totalOverflow / capOverflow.total * 100)}%) overschrijden het maximum — het algoritme wees die beurten toch toe bij gebrek aan alternatieven.
+                    </p>
+                    <div className="flex gap-px h-12 rounded-lg overflow-hidden border border-gray-200">
+                      {capOverflow.months.map(([month, { total, overflow }]) => {
+                        const label = new Date(month + '-15').toLocaleDateString('nl-BE', { month: 'short' })
+                        const okH   = Math.round(((total - overflow) / total) * 100)
+                        const ovH   = 100 - okH
+                        const ovColor = ovH > 50 ? 'bg-red-400' : 'bg-amber-400'
+                        return (
+                          <div
+                            key={month}
+                            className="flex-1 flex flex-col"
+                            title={`${label}: ${overflow} van ${total} beurten over limiet`}
+                          >
+                            <div className="flex-1 flex flex-col justify-end bg-gray-50">
+                              {ovH > 0 && <div className={`${ovColor}`} style={{ height: `${ovH}%` }} />}
+                              {okH > 0 && <div className="bg-green-400" style={{ height: `${okH}%` }} />}
+                            </div>
+                            <div className="text-center text-[9px] text-gray-400 leading-none py-0.5 bg-white border-t border-gray-100 shrink-0">
+                              {label}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] text-gray-500">
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-400" /> binnen limiet</span>
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-400" /> boven limiet (&lt;50%)</span>
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-400" /> boven limiet (&gt;50%)</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                onClick={handleGenerate}
+                className="bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-6 py-2 rounded-lg transition-colors"
+              >
+                ↺ Genereren
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -510,8 +676,8 @@ export default function ScheduleTab() {
 
       {/* ── Stats table ── */}
       {stats.length > 0 && (
-        <div className="mt-6 print:hidden">
-          <h3 className="text-base font-semibold text-gray-800 mb-3">Verdeling per ouder</h3>
+        <div className="mt-6 print:hidden space-y-3">
+          <h3 className="text-base font-semibold text-gray-800">Verdeling per ouder</h3>
           <div className="overflow-x-auto rounded-xl border border-gray-200">
             <table className="min-w-full text-sm border-collapse">
               <thead>
@@ -520,7 +686,8 @@ export default function ScheduleTab() {
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Kinderen</th>
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Doel</th>
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Beurten</th>
-                  <th className="text-center px-4 py-2 font-semibold text-gray-600">Δ</th>
+                  <th className="text-center px-4 py-2 font-semibold text-gray-600">Δ dit jaar</th>
+                  <th className="text-center px-4 py-2 font-semibold text-gray-600">Overdracht</th>
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Gecombineerd</th>
                   <th className="text-left px-4 py-2 font-semibold text-gray-600">Per klas</th>
                 </tr>
@@ -532,6 +699,8 @@ export default function ScheduleTab() {
                   .map((s, i) => {
                     const dev = s.deviation
                     const devColor = Math.abs(dev) <= 1 ? 'text-gray-400' : dev > 0 ? 'text-amber-600' : 'text-blue-500'
+                    const co = parentCarryOver.get(s.parentId) ?? 0
+                    const coColor = co > 0 ? 'text-green-600' : co < 0 ? 'text-amber-600' : 'text-gray-300'
                     return (
                       <tr key={s.parentId} className={`border-b border-gray-100 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
                         <td className="px-4 py-2 font-medium text-gray-900">{s.parentName}</td>
@@ -540,6 +709,9 @@ export default function ScheduleTab() {
                         <td className="px-4 py-2 text-center font-semibold text-brand-700">{s.assignmentCount}</td>
                         <td className={`px-4 py-2 text-center text-xs font-medium ${devColor}`}>
                           {dev > 0 ? `+${dev.toFixed(1)}` : dev.toFixed(1)}
+                        </td>
+                        <td className={`px-4 py-2 text-center text-xs font-medium ${coColor}`}>
+                          {co !== 0 ? (co > 0 ? `+${co.toFixed(1)}` : co.toFixed(1)) : '—'}
                         </td>
                         <td className="px-4 py-2 text-center text-gray-600">
                           {s.compactedWeekends > 0 ? <span className="text-green-600">{s.compactedWeekends}×</span> : '—'}
@@ -552,6 +724,18 @@ export default function ScheduleTab() {
                   })}
               </tbody>
             </table>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-xs text-gray-400">
+              Δ dit jaar = afwijking t.o.v. doel dit schooljaar — exporteer als overdracht voor volgend jaar.
+            </p>
+            <button
+              onClick={exportCarryOverCsv}
+              className="text-sm text-gray-600 border border-gray-300 hover:border-gray-400 bg-white rounded-lg px-4 py-2 transition-colors flex items-center gap-2"
+            >
+              ↓ Exporteer overdracht voor volgend jaar
+            </button>
           </div>
         </div>
       )}
