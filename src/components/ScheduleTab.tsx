@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useStore } from '../store'
 import {
   generateSchedule,
   resolveWeekends,
   computeStats,
   compareMethodTargets,
+  isKidActiveOn,
 } from '../algorithm'
 import type { MethodComparison } from '../algorithm'
 import { DAY_LABELS, METHOD_LABELS } from '../types'
@@ -19,21 +20,36 @@ import {
 } from '../utils/export'
 
 const CLASS_COLORS = [
-  'bg-blue-50 text-blue-900',   'bg-green-50 text-green-900',
+  'bg-blue-50 text-blue-900',     'bg-green-50 text-green-900',
   'bg-purple-50 text-purple-900', 'bg-amber-50 text-amber-900',
-  'bg-rose-50 text-rose-900',   'bg-teal-50 text-teal-900',
+  'bg-rose-50 text-rose-900',     'bg-teal-50 text-teal-900',
   'bg-orange-50 text-orange-900', 'bg-indigo-50 text-indigo-900',
 ]
 const DAY_BADGE: Record<string, string> = {
-  friday: 'bg-violet-100 text-violet-700',
+  friday:   'bg-violet-100 text-violet-700',
   saturday: 'bg-sky-100 text-sky-700',
-  sunday: 'bg-emerald-100 text-emerald-700',
+  sunday:   'bg-emerald-100 text-emerald-700',
 }
-
 const METHOD_ICON: Record<WeightMethod, string> = {
   sqrt:          '⚖️',
   'per-student': '🔄',
 }
+
+/** Six-dot grip icon — classic drag handle. */
+function GripIcon() {
+  return (
+    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true" className="pointer-events-none">
+      <circle cx="2"  cy="2"  r="1.5" />
+      <circle cx="8"  cy="2"  r="1.5" />
+      <circle cx="2"  cy="7"  r="1.5" />
+      <circle cx="8"  cy="7"  r="1.5" />
+      <circle cx="2"  cy="12" r="1.5" />
+      <circle cx="8"  cy="12" r="1.5" />
+    </svg>
+  )
+}
+
+type SwapValidity = 'clean' | 'compact-warn' | 'impossible' | 'ineligible'
 
 export default function ScheduleTab() {
   const { data, update } = useStore()
@@ -41,6 +57,10 @@ export default function ScheduleTab() {
   const [method, setMethod]         = useState<WeightMethod>('sqrt')
   const [comparison, setComparison] = useState<MethodComparison[] | null>(null)
   const [showExport, setShowExport] = useState(false)
+
+  // Drag-and-drop state
+  const [dragging, setDragging]         = useState<{ classId: string; fridayDate: string } | null>(null)
+  const [dragOverFriday, setDragOverFriday] = useState<string | null>(null)
 
   const weekends       = resolveWeekends(data)
   const activeWeekends = weekends.filter((w) => !w.skipped)
@@ -67,15 +87,119 @@ export default function ScheduleTab() {
   const lookup = new Map<string, typeof assignments[0]>()
   for (const a of assignments) lookup.set(`${a.weekendFriday}::${a.classId}`, a)
 
-  // Map fridayDate → resolved weekend (for available-days count and note)
   const weekendMeta = new Map(weekends.map((w) => [w.fridayDate, w]))
+  const parentName  = new Map(data.parents.map((p) => [p.id, p.name]))
+  const kidName     = new Map(data.parents.flatMap((p) => p.kids.map((k) => [k.id, k.name])))
 
-  const parentName = new Map(data.parents.map((p) => [p.id, p.name]))
-  const kidName    = new Map(data.parents.flatMap((p) => p.kids.map((k) => [k.id, k.name])))
+  const stats = assignments.length > 0 ? computeStats(data, activeWeekends, method) : []
 
-  const stats = assignments.length > 0
-    ? computeStats(data, activeWeekends, method)
-    : []
+  // ── Swap helpers ───────────────────────────────────────────────────────────
+
+  /** True if the parent has an active kid for classId on fridayDate. */
+  function parentEligibleOn(parentId: string, classId: string, fridayDate: string): boolean {
+    const p = data.parents.find((q) => q.id === parentId)
+    return p?.kids.some((k) => k.classId === classId && isKidActiveOn(k, fridayDate)) ?? false
+  }
+
+  /**
+   * Can we swap the two assignments for classId on srcFriday ↔ tgtFriday?
+   * • 'clean'        — no compaction issues for either parent
+   * • 'compact-warn' — one parent would end up with 2 assignments on the same weekend
+   * • 'ineligible'   — a parent has no active kid for this class on the swapped weekend,
+   *                    or one of the slots has no assignment
+   */
+  function getSwapValidity(classId: string, srcFriday: string, tgtFriday: string): SwapValidity {
+    if (srcFriday === tgtFriday) return 'ineligible'
+    const src = lookup.get(`${srcFriday}::${classId}`)
+    const tgt = lookup.get(`${tgtFriday}::${classId}`)
+    if (!src || !tgt) return 'ineligible'
+
+    // Eligibility: each parent must have an active kid in this class on the NEW weekend
+    if (!parentEligibleOn(src.parentId, classId, tgtFriday)) return 'ineligible'
+    if (!parentEligibleOn(tgt.parentId, classId, srcFriday)) return 'ineligible'
+
+    // Does dragging this cell away break the SOURCE parent's existing compaction?
+    // (they have another assignment on srcFriday — moving one away splits their visit)
+    const srcBreaksCompact = assignments.some(
+      (a) => a.parentId === src.parentId && a.weekendFriday === srcFriday && a.classId !== classId,
+    )
+
+    // Does displacing the TARGET cell break the TARGET parent's existing compaction?
+    // (they have another assignment on tgtFriday — moving them away splits their visit)
+    const tgtBreaksCompact = assignments.some(
+      (a) => a.parentId === tgt.parentId && a.weekendFriday === tgtFriday && a.classId !== classId,
+    )
+
+    // Orange: allowed — drag initiated from within a compacted block (deliberate two-hop)
+    if (srcBreaksCompact) return 'compact-warn'
+
+    // Red: blocked — a regular cell cannot remotely disrupt the target's compaction;
+    // the user must first drag from within that compacted block instead
+    if (tgtBreaksCompact) return 'impossible'
+
+    return 'clean'
+  }
+
+  /**
+   * Swap the two assignments for classId on friday1 ↔ friday2.
+   * The `day` field stays with the weekend slot; only parentId + kidId are swapped.
+   */
+  function performSwap(classId: string, friday1: string, friday2: string) {
+    update((d) => {
+      const a1 = d.assignments.find((a) => a.weekendFriday === friday1 && a.classId === classId)
+      const a2 = d.assignments.find((a) => a.weekendFriday === friday2 && a.classId === classId)
+      if (!a1 || !a2) return
+      ;[a1.parentId, a2.parentId] = [a2.parentId, a1.parentId]
+      ;[a1.kidId,    a2.kidId]    = [a2.kidId,    a1.kidId]
+    })
+  }
+
+  const parentCarryOver = new Map(data.parents.map((p) => [p.id, p.carryOver ?? 0]))
+
+  const exportCarryOverCsv = () => {
+    if (!stats.length) return
+    const lines = ['naam,overdracht']
+    for (const s of stats) {
+      lines.push(`"${s.parentName.replace(/"/g, '""')}",${s.deviation.toFixed(2)}`)
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url; a.download = 'overdracht-volgend-jaar.csv'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // ── Cap overflow analysis (live, based on current assignments) ─────────────
+
+  const capOverflow = useMemo(() => {
+    if (data.maxDutiesPerFamily === null || assignments.length === 0) return null
+    const cap = data.maxDutiesPerFamily
+
+    // For each parent, mark their assignments beyond the cap (sorted chronologically)
+    const overflowKeys = new Set<string>()
+    for (const p of data.parents) {
+      const sorted = assignments
+        .filter((a) => a.parentId === p.id)
+        .sort((a, b) => a.weekendFriday.localeCompare(b.weekendFriday))
+      sorted.slice(cap).forEach((a) => overflowKeys.add(`${a.weekendFriday}::${a.classId}`))
+    }
+
+    // Group by month (YYYY-MM)
+    const byMonth = new Map<string, { total: number; overflow: number }>()
+    for (const a of assignments) {
+      const m = a.weekendFriday.slice(0, 7)
+      const cur = byMonth.get(m) ?? { total: 0, overflow: 0 }
+      cur.total++
+      if (overflowKeys.has(`${a.weekendFriday}::${a.classId}`)) cur.overflow++
+      byMonth.set(m, cur)
+    }
+
+    return {
+      months: [...byMonth.entries()].sort(),
+      totalOverflow: overflowKeys.size,
+      total: assignments.length,
+    }
+  }, [data.maxDutiesPerFamily, assignments, data.parents])
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -105,41 +229,28 @@ export default function ScheduleTab() {
 
           {showExport && (
             <>
-              {/* Click-outside backdrop */}
               <div className="fixed inset-0 z-10" onClick={() => setShowExport(false)} />
               <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-20 min-w-60 py-2">
-
                 <div className="px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">Excel</div>
-                <button
-                  onClick={() => { exportAllClassesXlsx(data, activeWeekends); setShowExport(false) }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                >
+                <button onClick={() => { exportAllClassesXlsx(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   📊 Alle klassen
                 </button>
-                <button
-                  onClick={() => { exportPerClassXlsx(data, activeWeekends); setShowExport(false) }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                >
+                <button onClick={() => { exportPerClassXlsx(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   📊 Per klas (aparte tabbladen)
                 </button>
-
                 <div className="border-t border-gray-100 mt-1 pt-1 px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">PDF / Afdrukken</div>
-                <button
-                  onClick={() => { printAllClasses(data, activeWeekends); setShowExport(false) }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                >
+                <button onClick={() => { printAllClasses(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   🖨 Alle klassen
                 </button>
-                <button
-                  onClick={() => { printPerClass(data, activeWeekends); setShowExport(false) }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                >
+                <button onClick={() => { printPerClass(data, activeWeekends); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   🖨 Per klas
                 </button>
-                <button
-                  onClick={() => { printParentsAlpha(data); setShowExport(false) }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                >
+                <button onClick={() => { printParentsAlpha(data); setShowExport(false) }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   🖨 Ouders alfabetisch
                 </button>
               </div>
@@ -167,12 +278,11 @@ export default function ScheduleTab() {
             </button>
           </div>
 
-          {/* Comparison table */}
           {comparison && (
             <div className="space-y-3">
               <p className="text-xs text-gray-500">
                 Verwachte verdeling per gezin bij <strong>{activeWeekends.length} actieve weekends</strong> en <strong>{classes.length} klassen</strong>.
-                Schoolbezoeken = berekend met perfecte compactie (alle klassen van een gezin poetsen in één bezoek aan de school).
+                Schoolbezoeken = berekend met perfecte compactie.
               </p>
 
               <div className="overflow-x-auto rounded-lg border border-gray-200">
@@ -228,39 +338,147 @@ export default function ScheduleTab() {
                 <div className="bg-brand-50 border border-brand-200 rounded-lg p-3">
                   <span className="font-semibold text-brand-800">⚖️ Methode 1 — gebalanceerd</span><br />
                   Gewicht = √kinderen. Elk extra kind geeft een gedeeltelijke korting op het aantal beurten.
-                  Grote gezinnen doen meer dan bij methode 2, maar komen minder vaak langs dan kleine gezinnen.
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
                   <span className="font-semibold text-gray-700">🔄 Methode 2 — gelijk aantal sessies</span><br />
                   Elk gezin komt even vaak naar school poetsen (~{comparison[1]?.byKidCount[0]?.schoolVisitsIfCompacted.toFixed(1)}×).
-                  Een 3-kinderenouder poetst bij elk bezoek 3 klassen; een 1-kindouder poetst er 1.
                 </div>
               </div>
             </div>
           )}
 
           {/* Method selector + generate */}
-          <div className="border-t border-gray-100 pt-4 flex items-center gap-4 flex-wrap">
-            <span className="text-sm font-medium text-gray-700">Methode:</span>
-            {(['sqrt', 'per-student'] as WeightMethod[]).map((m) => (
-              <label key={m} className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+          <div className="border-t border-gray-100 pt-4 space-y-3">
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="text-sm font-medium text-gray-700">Methode:</span>
+              {(['sqrt', 'per-student'] as WeightMethod[]).map((m) => (
+                <label key={m} className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="method"
+                    value={m}
+                    checked={method === m}
+                    onChange={() => setMethod(m)}
+                    className="accent-brand-600"
+                  />
+                  {METHOD_ICON[m]} {m === 'sqrt' ? 'Methode 1' : 'Methode 2'}
+                </label>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
                 <input
-                  type="radio"
-                  name="method"
-                  value={m}
-                  checked={method === m}
-                  onChange={() => setMethod(m)}
+                  type="checkbox"
+                  checked={data.maxDutiesPerFamily !== null}
+                  onChange={(e) => update((d) => { d.maxDutiesPerFamily = e.target.checked ? 4 : null })}
                   className="accent-brand-600"
                 />
-                {METHOD_ICON[m]} {m === 'sqrt' ? 'Methode 1' : 'Methode 2'}
+                Maximum beurten per gezin
               </label>
-            ))}
-            <button
-              onClick={handleGenerate}
-              className="ml-auto bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-6 py-2 rounded-lg transition-colors"
-            >
-              ↺ Genereren
-            </button>
+              {data.maxDutiesPerFamily !== null && (
+                <input
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={data.maxDutiesPerFamily}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (v >= 1) update((d) => { d.maxDutiesPerFamily = v })
+                  }}
+                  className="w-16 text-center text-sm border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              )}
+              {data.maxDutiesPerFamily === null && (
+                <span className="text-xs text-gray-400">geen limiet</span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={data.carryOverLimit !== null}
+                  onChange={(e) => update((d) => { d.carryOverLimit = e.target.checked ? 2 : null })}
+                  className="accent-brand-600"
+                />
+                Overdracht vorig jaar beperken tot
+              </label>
+              {data.carryOverLimit !== null && (
+                <>
+                  <input
+                    type="number"
+                    min={0.5}
+                    max={10}
+                    step={0.5}
+                    value={data.carryOverLimit}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value)
+                      if (v >= 0.5) update((d) => { d.carryOverLimit = v })
+                    }}
+                    className="w-16 text-center text-sm border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  />
+                  <span className="text-xs text-gray-400">beurt(en)</span>
+                </>
+              )}
+              {data.carryOverLimit === null && (
+                <span className="text-xs text-gray-400">geen limiet</span>
+              )}
+            </div>
+
+            {/* Cap coverage visualization */}
+            {capOverflow && (
+              <div className="space-y-1.5 pt-1">
+                {capOverflow.totalOverflow === 0 ? (
+                  <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                    ✓ Alle {capOverflow.total} toewijzingen passen binnen het maximum van {data.maxDutiesPerFamily}.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-xs text-amber-700">
+                      <strong>{capOverflow.totalOverflow}</strong> van de {capOverflow.total} toewijzingen ({Math.round(capOverflow.totalOverflow / capOverflow.total * 100)}%) overschrijden het maximum — het algoritme wees die beurten toch toe bij gebrek aan alternatieven.
+                    </p>
+                    <div className="flex gap-px h-12 rounded-lg overflow-hidden border border-gray-200">
+                      {capOverflow.months.map(([month, { total, overflow }]) => {
+                        const label = new Date(month + '-15').toLocaleDateString('nl-BE', { month: 'short' })
+                        const okH   = Math.round(((total - overflow) / total) * 100)
+                        const ovH   = 100 - okH
+                        const ovColor = ovH > 50 ? 'bg-red-400' : 'bg-amber-400'
+                        return (
+                          <div
+                            key={month}
+                            className="flex-1 flex flex-col"
+                            title={`${label}: ${overflow} van ${total} beurten over limiet`}
+                          >
+                            <div className="flex-1 flex flex-col justify-end bg-gray-50">
+                              {ovH > 0 && <div className={`${ovColor}`} style={{ height: `${ovH}%` }} />}
+                              {okH > 0 && <div className="bg-green-400" style={{ height: `${okH}%` }} />}
+                            </div>
+                            <div className="text-center text-[9px] text-gray-400 leading-none py-0.5 bg-white border-t border-gray-100 shrink-0">
+                              {label}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] text-gray-500">
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-400" /> binnen limiet</span>
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-400" /> boven limiet (&lt;50%)</span>
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-400" /> boven limiet (&gt;50%)</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                onClick={handleGenerate}
+                className="bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-6 py-2 rounded-lg transition-colors"
+              >
+                ↺ Genereren
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -268,11 +486,15 @@ export default function ScheduleTab() {
       {/* ── Schedule grid ── */}
       {assignments.length > 0 && (
         <>
-          {/* Method label above grid */}
-          <div className="flex items-center gap-2 text-xs text-gray-500 print:hidden">
-            <span className="bg-brand-50 text-brand-700 border border-brand-200 rounded-full px-3 py-1">
+          <div className="flex items-center gap-3 print:hidden">
+            <span className="bg-brand-50 text-brand-700 border border-brand-200 rounded-full px-3 py-1 text-xs">
               {METHOD_LABELS[method]}
             </span>
+            {dragging && (
+              <span className="text-xs text-gray-400 italic animate-pulse">
+                Sleep naar een cel in dezelfde kolom om te wisselen…
+              </span>
+            )}
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -296,29 +518,130 @@ export default function ScheduleTab() {
                 {weekends.map((w, wi) => {
                   const isEven = wi % 2 === 0
                   return (
-                    <tr key={w.fridayDate} className={`border-b border-gray-100 ${w.skipped ? 'opacity-40' : isEven ? 'bg-white' : 'bg-gray-50/50'}`}>
+                    <tr
+                      key={w.fridayDate}
+                      className={`border-b border-gray-100 ${w.skipped ? 'opacity-40' : isEven ? 'bg-white' : 'bg-gray-50/50'}`}
+                    >
+                      {/* Date column */}
                       <td className={`px-4 py-3 whitespace-nowrap sticky left-0 ${isEven ? 'bg-white' : 'bg-gray-50'}`}>
                         <div className="font-medium text-gray-800">{fmtWeekend(w.fridayDate)}</div>
                         {w.isHoliday && !w.skipped && <div className="text-xs text-amber-600">{w.holidayName}</div>}
                         {w.skipped && <div className="text-xs text-gray-400 italic">{w.holidayName ?? 'overgeslagen'}</div>}
                         {w.note && <div className="text-xs text-blue-600 italic mt-0.5">{w.note}</div>}
                       </td>
+
+                      {/* Assignment cells */}
                       {classes.map((cls) => {
                         const a = lookup.get(`${w.fridayDate}::${cls.id}`)
-                        if (w.skipped || !a) return (
-                          <td key={cls.id} className="px-4 py-3 text-center text-gray-300 text-xs italic">
-                            {w.skipped ? '—' : '?'}
-                          </td>
-                        )
+
+                        // Skipped weekend or missing assignment
+                        if (w.skipped || !a) {
+                          return (
+                            <td key={cls.id} className="px-4 py-3 text-center text-gray-300 text-xs italic">
+                              {w.skipped ? '—' : '?'}
+                            </td>
+                          )
+                        }
+
+                        // ── Drag state computations ──────────────────────────
+                        const isSource   = dragging?.classId === cls.id && dragging?.fridayDate === w.fridayDate
+                        const sameColumn = dragging?.classId === cls.id
+
+                        const validity: SwapValidity | null =
+                          dragging && sameColumn && !isSource
+                            ? getSwapValidity(cls.id, dragging.fridayDate, w.fridayDate)
+                            : null
+
+                        const isOver = dragOverFriday === w.fridayDate && sameColumn && !isSource
+
+                        // ── Cell CSS ──────────────────────────────────────────
+                        let cellCls = 'px-3 py-3 text-center relative transition-all duration-100 '
+                        if (isSource) {
+                          cellCls += 'opacity-40 ring-2 ring-inset ring-brand-400 bg-brand-50 '
+                        } else if (validity === 'clean') {
+                          cellCls += isOver
+                            ? 'ring-2 ring-inset ring-green-500 bg-green-100 '
+                            : 'ring-2 ring-inset ring-green-400 bg-green-50 cursor-copy '
+                        } else if (validity === 'compact-warn') {
+                          cellCls += isOver
+                            ? 'ring-2 ring-inset ring-amber-500 bg-amber-100 '
+                            : 'ring-2 ring-inset ring-amber-400 bg-amber-50 cursor-copy '
+                        } else if (validity === 'impossible') {
+                          cellCls += 'ring-2 ring-inset ring-red-400 bg-red-50 cursor-not-allowed '
+                        } else if (validity === 'ineligible') {
+                          cellCls += 'opacity-40 '
+                        } else if (dragging && !sameColumn) {
+                          cellCls += 'opacity-30 '   // dim other columns during drag
+                        } else {
+                          cellCls += 'cursor-grab hover:ring-2 hover:ring-gray-200 hover:rounded-lg '
+                        }
+
                         return (
-                          <td key={cls.id} className="px-4 py-3 text-center">
-                            <div className="font-medium text-gray-900">{kidName.get(a.kidId) ?? '?'}</div>
-                            <div className="text-xs text-gray-400">{parentName.get(a.parentId)}</div>
-                            {(weekendMeta.get(a.weekendFriday)?.availableDays.length ?? 2) === 1 && (
-                              <span className={`inline-block mt-1 text-xs rounded-full px-2 py-0.5 ${DAY_BADGE[a.day]}`}>
-                                {DAY_LABELS[a.day].slice(0, 3)}
-                              </span>
-                            )}
+                          <td
+                            key={cls.id}
+                            className={cellCls}
+                            draggable={true}
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = 'move'
+                              // Slight delay so the browser captures the ghost before we change state
+                              requestAnimationFrame(() =>
+                                setDragging({ classId: cls.id, fridayDate: w.fridayDate })
+                              )
+                            }}
+                            onDragOver={(e) => {
+                              if (!dragging || dragging.classId !== cls.id || isSource) return
+                              if (validity === 'ineligible' || validity === 'impossible') return
+                              e.preventDefault()
+                              e.dataTransfer.dropEffect = 'move'
+                              if (dragOverFriday !== w.fridayDate) setDragOverFriday(w.fridayDate)
+                            }}
+                            onDragLeave={(e) => {
+                              // Only clear when truly leaving this cell (not entering a child)
+                              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                                setDragOverFriday((prev) => prev === w.fridayDate ? null : prev)
+                              }
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault()
+                              if (!dragging || dragging.classId !== cls.id || isSource) return
+                              if (validity === 'ineligible' || validity === 'impossible') return
+                              performSwap(cls.id, dragging.fridayDate, w.fridayDate)
+                              setDragging(null)
+                              setDragOverFriday(null)
+                            }}
+                            onDragEnd={() => {
+                              setDragging(null)
+                              setDragOverFriday(null)
+                            }}
+                          >
+                            {/* Drag handle — visible on hover */}
+                            <div className="group">
+                              <div className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-gray-300 hover:text-gray-500 select-none print:hidden">
+                                <GripIcon />
+                              </div>
+
+                              <div className="font-medium text-gray-900 select-none">{kidName.get(a.kidId) ?? '?'}</div>
+                              <div className="text-xs text-gray-400 select-none">{parentName.get(a.parentId)}</div>
+
+                              {/* Day badge — only when a single day is available */}
+                              {(weekendMeta.get(a.weekendFriday)?.availableDays.length ?? 2) === 1 && (
+                                <span className={`inline-block mt-1 text-xs rounded-full px-2 py-0.5 ${DAY_BADGE[a.day]}`}>
+                                  {DAY_LABELS[a.day].slice(0, 3)}
+                                </span>
+                              )}
+
+                              {/* Tooltips during drag */}
+                              {validity === 'compact-warn' && isOver && (
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 bg-amber-700 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-30 pointer-events-none print:hidden">
+                                  ⚠️ Breekt jouw compactie
+                                </div>
+                              )}
+                              {validity === 'impossible' && isOver && (
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 bg-red-700 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-30 pointer-events-none print:hidden">
+                                  🚫 Sleep vanuit die cel zelf
+                                </div>
+                              )}
+                            </div>
                           </td>
                         )
                       })}
@@ -328,13 +651,33 @@ export default function ScheduleTab() {
               </tbody>
             </table>
           </div>
+
+          {/* Legend — only shown when a schedule exists */}
+          <div className="flex gap-4 text-xs text-gray-400 print:hidden flex-wrap">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-sm ring-2 ring-green-400 bg-green-50" />
+              Wisselbaar
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-sm ring-2 ring-amber-400 bg-amber-50" />
+              Breekt jouw compactie (toegestaan)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-sm ring-2 ring-red-400 bg-red-50" />
+              Niet mogelijk — sleep vanuit die cel zelf
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-sm bg-gray-200 opacity-50" />
+              Kind niet actief dit weekend
+            </span>
+          </div>
         </>
       )}
 
       {/* ── Stats table ── */}
       {stats.length > 0 && (
-        <div className="mt-6 print:hidden">
-          <h3 className="text-base font-semibold text-gray-800 mb-3">Verdeling per ouder</h3>
+        <div className="mt-6 print:hidden space-y-3">
+          <h3 className="text-base font-semibold text-gray-800">Verdeling per ouder</h3>
           <div className="overflow-x-auto rounded-xl border border-gray-200">
             <table className="min-w-full text-sm border-collapse">
               <thead>
@@ -343,7 +686,8 @@ export default function ScheduleTab() {
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Kinderen</th>
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Doel</th>
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Beurten</th>
-                  <th className="text-center px-4 py-2 font-semibold text-gray-600">Δ</th>
+                  <th className="text-center px-4 py-2 font-semibold text-gray-600">Δ dit jaar</th>
+                  <th className="text-center px-4 py-2 font-semibold text-gray-600">Overdracht</th>
                   <th className="text-center px-4 py-2 font-semibold text-gray-600">Gecombineerd</th>
                   <th className="text-left px-4 py-2 font-semibold text-gray-600">Per klas</th>
                 </tr>
@@ -355,6 +699,8 @@ export default function ScheduleTab() {
                   .map((s, i) => {
                     const dev = s.deviation
                     const devColor = Math.abs(dev) <= 1 ? 'text-gray-400' : dev > 0 ? 'text-amber-600' : 'text-blue-500'
+                    const co = parentCarryOver.get(s.parentId) ?? 0
+                    const coColor = co > 0 ? 'text-green-600' : co < 0 ? 'text-amber-600' : 'text-gray-300'
                     return (
                       <tr key={s.parentId} className={`border-b border-gray-100 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
                         <td className="px-4 py-2 font-medium text-gray-900">{s.parentName}</td>
@@ -363,6 +709,9 @@ export default function ScheduleTab() {
                         <td className="px-4 py-2 text-center font-semibold text-brand-700">{s.assignmentCount}</td>
                         <td className={`px-4 py-2 text-center text-xs font-medium ${devColor}`}>
                           {dev > 0 ? `+${dev.toFixed(1)}` : dev.toFixed(1)}
+                        </td>
+                        <td className={`px-4 py-2 text-center text-xs font-medium ${coColor}`}>
+                          {co !== 0 ? (co > 0 ? `+${co.toFixed(1)}` : co.toFixed(1)) : '—'}
                         </td>
                         <td className="px-4 py-2 text-center text-gray-600">
                           {s.compactedWeekends > 0 ? <span className="text-green-600">{s.compactedWeekends}×</span> : '—'}
@@ -375,6 +724,18 @@ export default function ScheduleTab() {
                   })}
               </tbody>
             </table>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-xs text-gray-400">
+              Δ dit jaar = afwijking t.o.v. doel dit schooljaar — exporteer als overdracht voor volgend jaar.
+            </p>
+            <button
+              onClick={exportCarryOverCsv}
+              className="text-sm text-gray-600 border border-gray-300 hover:border-gray-400 bg-white rounded-lg px-4 py-2 transition-colors flex items-center gap-2"
+            >
+              ↓ Exporteer overdracht voor volgend jaar
+            </button>
           </div>
         </div>
       )}

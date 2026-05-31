@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 5174
+    },
+    {
+      "name": "check-for-robots",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/tanguy/Projects/steinerscholen/check-for-robots", "run", "dev", "--", "-p", "3001"],
+      "port": 3001
     }
   ]
 }

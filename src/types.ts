@@ -35,6 +35,8 @@ export interface Parent {
   id: string
   name: string
   kids: Kid[]
+  /** Carry-over from last year: positive = over-contributed, negative = under-contributed. */
+  carryOver?: number
 }
 
 export interface Holiday {
@@ -98,6 +100,10 @@ export interface AppData {
   weekendOverrides: WeekendOverride[]
   defaultAvailableDays: DaySlot[]
   assignments: Assignment[]
+  /** Maximum number of cleaning duties per family per year. null = no limit. */
+  maxDutiesPerFamily: number | null
+  /** Cap on how many beurten of carry-over are applied in scoring. null = no cap. */
+  carryOverLimit: number | null
 }
 
 export const DEFAULT_DATA: AppData = {
@@ -124,4 +130,6 @@ export const DEFAULT_DATA: AppData = {
   weekendOverrides: [],
   defaultAvailableDays: ['saturday', 'sunday'],
   assignments: [],
+  maxDutiesPerFamily: 4,
+  carryOverLimit: 2,
 }
